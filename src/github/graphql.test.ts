@@ -13,6 +13,7 @@ const node = (number: number) => ({
   url: `https://github.com/acme/app/pull/${number}`,
   title: `PR ${number}`,
   state: 'OPEN',
+  reviewDecision: 'REVIEW_REQUIRED',
   isDraft: false,
   author: { login: 'alice' },
   labels: { nodes: [{ name: 'bug' }], pageInfo: { hasNextPage: false } },
@@ -76,6 +77,7 @@ it('paginates typed GraphQL nodes', async () => {
   expect(result.pullRequests.map((row) => row.number)).toEqual([1, 2]);
   expect(result.pullRequests[0].requested_reviewers).toEqual(['bob']);
   expect(result.pullRequests[0].requested_teams).toEqual(['platform']);
+  expect(result.pullRequests[0].review_state).toBe('review_required');
 });
 it('keeps every open PR while cutting old closed history', async () => {
   const oldOpen = { ...node(10), updatedAt: '2020-01-01T00:00:00Z' };

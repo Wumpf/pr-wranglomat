@@ -14,6 +14,7 @@ const fields = new Set([
   'url',
   'title',
   'state',
+  'review_state',
   'draft',
   'author',
   'labels',

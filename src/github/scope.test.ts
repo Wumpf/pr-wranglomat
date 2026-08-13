@@ -61,6 +61,7 @@ it('reuses a 304 cached page and gives new snapshot metadata', async () => {
         repo: 'acme/app',
         repositoryId: 1,
         url: 'https://github.com/acme/app/pull/1',
+        review_state: null,
         draft: false,
         author: null,
         labels: [],

@@ -20,13 +20,44 @@ const pullRequest = (number: number, title: string, labels: string[]) => ({
   merged_at: null,
 });
 
+const graphPullRequest = (
+  number: number,
+  title: string,
+  reviewDecision: 'APPROVED' | 'REVIEW_REQUIRED',
+  draft = false,
+) => ({
+  number,
+  url: `https://github.com/acme/app/pull/${number}`,
+  title,
+  state: 'OPEN',
+  reviewDecision,
+  isDraft: draft,
+  author: { login: 'alice' },
+  labels: {
+    nodes: [{ name: number === 1 ? 'bug' : 'feature' }],
+    pageInfo: { hasNextPage: false },
+  },
+  assignees: { nodes: [], pageInfo: { hasNextPage: false } },
+  reviewRequests: {
+    nodes: [{ requestedReviewer: { login: 'bob' } }],
+    pageInfo: { hasNextPage: false },
+  },
+  baseRefName: 'main',
+  headRefName: `branch-${number}`,
+  milestone: null,
+  createdAt: '2024-01-01T00:00:00Z',
+  updatedAt: '2024-01-10T00:00:00Z',
+  closedAt: null,
+  mergedAt: null,
+});
+
 async function mockGitHub(page: Page) {
   await page.route('https://api.github.com/**', async (route) => {
     const request = route.request();
     const cors = {
       'access-control-allow-origin': 'http://127.0.0.1:4173',
-      'access-control-allow-methods': 'GET, OPTIONS',
-      'access-control-allow-headers': 'Authorization, Accept',
+      'access-control-allow-methods': 'GET, POST, OPTIONS',
+      'access-control-allow-headers': 'Authorization, Accept, Content-Type',
       'access-control-expose-headers': 'Link, X-RateLimit-Remaining',
     };
     if (request.method() === 'OPTIONS') {
@@ -35,6 +66,31 @@ async function mockGitHub(page: Page) {
     }
     const url = new URL(request.url());
     expect(request.headers().authorization).toBe('Bearer test-token');
+    if (url.pathname === '/graphql') {
+      expect(request.postData()).toContain('reviewDecision');
+      await route.fulfill({
+        headers: cors,
+        json: {
+          data: {
+            repository: {
+              pullRequests: {
+                nodes: [
+                  graphPullRequest(1, 'Fix crash', 'REVIEW_REQUIRED'),
+                  graphPullRequest(2, 'Add feature', 'APPROVED', true),
+                ],
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+            rateLimit: {
+              cost: 1,
+              remaining: 4995,
+              resetAt: '2030-01-01T00:00:00Z',
+            },
+          },
+        },
+      });
+      return;
+    }
     if (url.pathname === '/user') {
       await route.fulfill({ headers: cors, json: { login: 'octocat' } });
       return;
@@ -73,7 +129,12 @@ async function mockGitHub(page: Page) {
         },
         body: JSON.stringify(
           pageNumber === '2'
-            ? [pullRequest(2, 'Add feature', ['feature'])]
+            ? [
+                {
+                  ...pullRequest(2, 'Add feature', ['feature']),
+                  draft: true,
+                },
+              ]
             : [pullRequest(1, 'Fix crash', ['bug'])],
         ),
       });
@@ -106,7 +167,39 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
   await expect(
     page.getByRole('link', { name: /#2 Add feature/ }),
   ).toBeVisible();
+  await expect(
+    page.getByRole('cell', { name: 'Open', exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('cell', { name: 'Draft', exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('columnheader', { name: 'Reviewers' }),
+  ).toBeVisible();
+  await expect(page.getByRole('cell', { name: '@bob' }).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Export' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Import' })).toHaveCount(0);
   await expect(page.getByText(/2 PRs/).first()).toBeVisible();
+  await expect(
+    page.getByRole('cell', { name: 'Unavailable', exact: true }).first(),
+  ).toBeVisible();
+
+  await page.getByLabel('Transport').selectOption('graphql');
+  await page.getByRole('button', { name: /Refresh/ }).click();
+  await expect(
+    page.getByRole('cell', { name: 'Review required', exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('cell', { name: 'Approved', exact: true }),
+  ).toBeVisible();
+  const quickFilter = page.getByLabel('Filter expression');
+  await quickFilter.fill('review_state = "approved"');
+  await expect(
+    page.getByRole('link', { name: /#2 Add feature/ }),
+  ).toBeVisible();
+  await expect(page.getByRole('link', { name: /#1 Fix crash/ })).toHaveCount(0);
+  await quickFilter.fill('');
+
   const historyWarning = page.getByText(
     /snapshot omits some closed and merged/i,
   );
@@ -126,6 +219,10 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
 
   await page.getByRole('button', { name: 'New', exact: true }).click();
   await expect(page.getByLabel('Filter name')).toHaveValue('New filter');
+  await page.getByRole('button', { name: 'Keep on top' }).click();
+  await expect(
+    page.getByRole('button', { name: 'Remove from top' }),
+  ).toBeVisible();
   const editor = page.getByLabel('Filter expression');
   await editor.fill('state = "open"');
   await expect(page.getByText(/^Saving\./)).toBeVisible();
@@ -138,6 +235,9 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
   await page.reload();
   await expect(page.getByText(/Token not configured/)).toBeVisible();
   await expect(editor).toHaveValue('state =');
+  await expect(
+    page.getByRole('button', { name: 'Remove from top' }),
+  ).toBeVisible();
   await expect(page.getByRole('alert')).toBeVisible();
   await expect(page.getByRole('link', { name: /#1 Fix crash/ })).toBeVisible();
 

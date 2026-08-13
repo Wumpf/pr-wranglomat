@@ -31,7 +31,7 @@ interface GraphQLResponse {
 const query = `query PullRequests($owner:String!, $name:String!, $states:[PullRequestState!], $cursor:String) {
   repository(owner:$owner, name:$name) {
     pullRequests(first:100, after:$cursor, states:$states, orderBy:{field:UPDATED_AT,direction:DESC}) {
-      nodes { number url title state isDraft author { login } labels(first:100) { nodes { name } pageInfo { hasNextPage } } assignees(first:100) { nodes { login } pageInfo { hasNextPage } } reviewRequests(first:100) { nodes { requestedReviewer { ... on User { login } ... on Team { name } } } pageInfo { hasNextPage } } baseRefName headRefName createdAt updatedAt closedAt mergedAt milestone { title } }
+      nodes { number url title state reviewDecision isDraft author { login } labels(first:100) { nodes { name } pageInfo { hasNextPage } } assignees(first:100) { nodes { login } pageInfo { hasNextPage } } reviewRequests(first:100) { nodes { requestedReviewer { ... on User { login } ... on Team { name } } } pageInfo { hasNextPage } } baseRefName headRefName createdAt updatedAt closedAt mergedAt milestone { title } }
       pageInfo { hasNextPage endCursor }
     }
   }
@@ -131,6 +131,7 @@ export class GraphQLSource implements PullRequestSource {
     let resetAt: string | undefined;
     let cost = 0;
     const fieldCompleteness = {
+      review_state: true,
       labels: true,
       assignees: true,
       requested_reviewers: true,
@@ -264,6 +265,10 @@ export class GraphQLSource implements PullRequestSource {
       typeof item.url !== 'string' ||
       typeof item.title !== 'string' ||
       !['OPEN', 'CLOSED', 'MERGED'].includes(String(item.state)) ||
+      (item.reviewDecision !== null &&
+        !['APPROVED', 'CHANGES_REQUESTED', 'REVIEW_REQUIRED'].includes(
+          String(item.reviewDecision),
+        )) ||
       typeof item.createdAt !== 'string' ||
       typeof item.updatedAt !== 'string' ||
       !labels?.nodes ||
@@ -292,12 +297,21 @@ export class GraphQLSource implements PullRequestSource {
     );
     const complete = (value: { pageInfo?: { hasNextPage?: boolean } }) =>
       !value.pageInfo?.hasNextPage;
+    const reviewState =
+      item.reviewDecision === 'APPROVED'
+        ? 'approved'
+        : item.reviewDecision === 'CHANGES_REQUESTED'
+          ? 'changes_requested'
+          : item.reviewDecision === 'REVIEW_REQUIRED'
+            ? 'review_required'
+            : null;
     return normalizePullRequest(
       {
         number: item.number,
         html_url: item.url,
         title: item.title,
         state: item.state === 'OPEN' ? 'open' : 'closed',
+        review_state: reviewState,
         draft: Boolean(item.isDraft),
         user: author ? { login: String(author) } : null,
         labels: labels.nodes.map((value) => ({

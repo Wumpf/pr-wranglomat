@@ -9,6 +9,7 @@ const row = (overrides: Partial<PullRequest> = {}): PullRequest => ({
   url: 'https://github.com/acme/app/pull/1',
   title: 'Fix Crash',
   state: 'open',
+  review_state: 'review_required',
   draft: false,
   author: 'alice',
   labels: ['bug'],
@@ -29,6 +30,7 @@ const row = (overrides: Partial<PullRequest> = {}): PullRequest => ({
       'url',
       'title',
       'state',
+      'review_state',
       'draft',
       'author',
       'labels',
@@ -58,6 +60,8 @@ describe('query language', () => {
       'title ENDS WITH "crash"',
       'state = "OPEN"',
       'state != "closed"',
+      'review_state = "review_required"',
+      'review_state IN ["approved", "changes_requested"]',
       'number >= 1',
       'number < 2',
       'state IN ["open"]',
@@ -69,6 +73,16 @@ describe('query language', () => {
       'closed_at IS NOT NULL',
     ])
       expect(parse(expression).diagnostics).toEqual([]);
+  });
+  it('filters by GitHub review state', () => {
+    const parsed = parse('review_state = "approved"');
+    expect(parsed.diagnostics).toEqual([]);
+    expect(
+      evaluate(parsed.filter!, [
+        row({ review_state: 'approved' }),
+        row({ review_state: 'changes_requested' }),
+      ]).rows,
+    ).toHaveLength(1);
   });
   it('handles precedence, dates, duration, sort and limit', () => {
     const parsed = parse(

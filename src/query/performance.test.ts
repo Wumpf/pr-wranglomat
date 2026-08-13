@@ -14,6 +14,7 @@ it('evaluates 10,000 records without dynamic code', () => {
         url: '',
         title: `PR ${number}`,
         state: 'open',
+        review_state: null,
         draft: false,
         author: 'a',
         labels: [],

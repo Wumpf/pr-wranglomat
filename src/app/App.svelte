@@ -1,34 +1,17 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import {
+    pullRequestStatus,
+    type PullRequestStatus,
+    type ReviewState,
+  } from '../domain/pullRequest';
   import { createAppState } from './appState.svelte';
   const app = createAppState();
   let repoInput = '';
   let tokenInput = '';
   let message = '';
   let undoFilter: Awaited<ReturnType<typeof app.deleteFilter>>;
-  let importInput: HTMLInputElement;
   onMount(() => app.init());
-  function download(name: string, content: string) {
-    const url = URL.createObjectURL(
-      new Blob([content], { type: 'application/json' }),
-    );
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = name;
-    link.click();
-    URL.revokeObjectURL(url);
-  }
-  function exportFilters() {
-    download('pr-wranglomat-filters.json', app.exportFilters());
-  }
-  async function importFilters(file: File) {
-    try {
-      await app.importFilters(await file.text());
-      message = 'Filters imported.';
-    } catch (error) {
-      message = error instanceof Error ? error.message : 'Import failed.';
-    }
-  }
   async function add() {
     try {
       await app.addRepository(repoInput);
@@ -43,6 +26,25 @@
   }
   function chooseFilter(event: Event) {
     void app.selectFilter((event.currentTarget as HTMLSelectElement).value);
+  }
+  function statusLabel(status: PullRequestStatus): string {
+    const labels: Record<PullRequestStatus, string> = {
+      open: 'Open',
+      draft: 'Draft',
+      merged: 'Merged',
+      closed: 'Closed',
+    };
+    return labels[status];
+  }
+  function reviewStateLabel(
+    reviewState: ReviewState | null,
+    available: boolean,
+  ): string {
+    if (!available) return 'Unavailable';
+    if (reviewState === 'approved') return 'Approved';
+    if (reviewState === 'changes_requested') return 'Changes requested';
+    if (reviewState === 'review_required') return 'Review required';
+    return 'No decision';
   }
   function relativeTime(value: string): string {
     const seconds = Math.max(
@@ -110,7 +112,7 @@
         >
       </div>
     </section>
-    <section class="card" aria-labelledby="repositories-title">
+    <section class="card repositories" aria-labelledby="repositories-title">
       <div class="section-heading">
         <h2 id="repositories-title">Repositories</h2>
         <span class="badge">{app.repos.length}</span>
@@ -263,8 +265,11 @@
             class="secondary"
             disabled={!app.activeFilter}
             aria-pressed={app.activeFilter?.pinned ?? false}
+            title="Pinned filters stay at the top of the saved filter list"
             on:click={() => app.togglePinned()}
-            >{app.activeFilter?.pinned ? 'Unpin' : 'Pin'}</button
+            >{app.activeFilter?.pinned
+              ? 'Remove from top'
+              : 'Keep on top'}</button
           ><button class="secondary" on:click={() => app.newFilter()}
             >New</button
           ><button class="secondary" on:click={() => app.duplicateFilter()}
@@ -275,26 +280,13 @@
               undoFilter = await app.deleteFilter();
             }}
             disabled={!app.activeFilter}>Delete</button
-          ><button class="secondary" on:click={exportFilters}>Export</button
-          ><button class="secondary" on:click={() => importInput.click()}
-            >Import</button
-          ><input
-            bind:this={importInput}
-            type="file"
-            accept="application/json"
-            hidden
-            on:change={(e) => {
-              const file = (e.currentTarget as HTMLInputElement).files?.[0];
-              if (file) void importFilters(file);
-            }}
-          />{#if undoFilter}<button
+          >{#if undoFilter}<button
               class="secondary"
               on:click={() => {
                 void app.restoreFilter(undoFilter);
                 undoFilter = undefined;
               }}>Undo</button
             >{/if}
-          >
         </div>
       </div>
       <label for="filter-expression">Filter expression</label><textarea
@@ -314,10 +306,16 @@
           .map((x) => (x.line ? `Line ${x.line}, column ${x.column}` : ''))
           .filter(Boolean)
           .join(' · ')}<br />
-        Fields: <code>state</code>, <code>title</code>, <code>author</code>,
-        <code>labels</code>, <code>draft</code>, dates, <code>age</code>.
-        Operators include <code>AND OR NOT IN ANY ALL NONE</code>. {app.result
-          .length} matches{app.unknown ? ` · ${app.unknown} unknown` : ''}
+        Fields: <code>state</code>, <code>review_state</code>,
+        <code>requested_reviewers</code>, <code>requested_teams</code>,
+        <code>title</code>, <code>author</code>, <code>labels</code>,
+        <code>draft</code>, dates, <code>age</code>. Review states are
+        <code>approved</code>, <code>changes_requested</code>, and
+        <code>review_required</code> (GraphQL snapshots). GitHub treats a draft
+        as <code>state = "open"</code> with <code>draft = true</code>. Operators
+        include <code>AND OR NOT IN ANY ALL NONE</code>. {app.result.length} matches{app.unknown
+          ? ` · ${app.unknown} unknown`
+          : ''}
         {#if app.unavailableFields.length}<br /><strong
             >Unavailable fields:</strong
           >
@@ -343,25 +341,42 @@
             <thead
               ><tr
                 ><th scope="col">PR</th><th scope="col">State</th><th
-                  scope="col">Author</th
-                ><th scope="col">Labels</th><th scope="col">Updated</th></tr
+                  scope="col">Review</th
+                ><th scope="col">Reviewers</th><th scope="col">Author</th><th
+                  scope="col">Labels</th
+                ><th scope="col">Updated</th></tr
               ></thead
             ><tbody
               >{#each app.pagedResult as pr}<tr
                   ><td
                     ><a href={pr.url} target="_blank" rel="noreferrer"
                       >#{pr.number} {pr.title}</a
-                    ><small
-                      >{pr.repo} · {pr.base} ← {pr.head}{pr.draft
-                        ? ' · Draft'
-                        : ''}{pr.requested_reviewers.length ||
-                      pr.requested_teams.length
-                        ? ` · Review requested: ${[...pr.requested_reviewers, ...pr.requested_teams.map((team) => `team:${team}`)].join(', ')}`
-                        : ''}</small
-                    ></td
-                  ><td><span class="state">{pr.state}</span></td><td
-                    >{pr.author ?? 'Unknown'}</td
+                    ><small>{pr.repo} · {pr.base} ← {pr.head}</small></td
                   ><td
+                    ><span class={`state state--${pullRequestStatus(pr)}`}
+                      >{statusLabel(pullRequestStatus(pr))}</span
+                    ></td
+                  ><td
+                    ><span
+                      class={`review-state review-state--${pr.fieldCompleteness.review_state ? (pr.review_state ?? 'none') : 'unavailable'}`}
+                      >{reviewStateLabel(
+                        pr.review_state,
+                        Boolean(pr.fieldCompleteness.review_state),
+                      )}</span
+                    ></td
+                  ><td class="reviewers"
+                    >{#each pr.requested_reviewers as reviewer}<span
+                        class="reviewer">@{reviewer}</span
+                      >{/each}
+                    {#each pr.requested_teams as team}<span class="reviewer"
+                        >@{team}</span
+                      >{/each}
+                    {#if !pr.fieldCompleteness.requested_reviewers || !pr.fieldCompleteness.requested_teams}
+                      <span class="reviewer-note">Partial list</span>
+                    {:else if !pr.requested_reviewers.length && !pr.requested_teams.length}<span
+                        class="muted">—</span
+                      >{/if}</td
+                  ><td>{pr.author ?? 'Unknown'}</td><td
                     >{#each pr.labels as label}<span class="label">{label}</span
                       >{/each}</td
                   ><td
@@ -431,7 +446,7 @@
     min-height: 100vh;
   }
   .topbar {
-    padding: 18px max(20px, calc((100% - 1180px) / 2));
+    padding: 18px max(20px, calc((100% - 1560px) / 2));
     background: #24292f;
     color: white;
     display: flex;
@@ -456,11 +471,29 @@
     color: #3fb950;
   }
   main {
-    max-width: 1180px;
+    max-width: 1560px;
     margin: 22px auto;
     padding: 0 20px;
     display: grid;
+    grid-template-columns: minmax(290px, 340px) minmax(0, 1fr);
     gap: 16px;
+    align-items: start;
+  }
+  .credentials {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .repositories {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .editor {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .results {
+    grid-column: 2;
+    grid-row: 2;
   }
   .card {
     background: white;
@@ -585,8 +618,19 @@
   }
   .filter-actions {
     display: flex;
+    justify-content: flex-end;
     gap: 6px;
     flex-wrap: wrap;
+  }
+  .filter-actions select {
+    min-width: 190px;
+  }
+  .filter-actions input {
+    min-width: 170px;
+  }
+  .editor .section-heading {
+    align-items: flex-start;
+    gap: 20px;
   }
   .editor textarea {
     width: 100%;
@@ -622,7 +666,7 @@
   table {
     border-collapse: collapse;
     width: 100%;
-    min-width: 700px;
+    min-width: 1050px;
   }
   th,
   td {
@@ -635,8 +679,13 @@
     color: #57606a;
     font-size: 12px;
   }
+  th:first-child,
   td:first-child {
-    max-width: 450px;
+    width: 34%;
+    min-width: 260px;
+  }
+  .reviewers {
+    min-width: 150px;
   }
   td a {
     color: #0969da;
@@ -647,11 +696,63 @@
     display: block;
   }
   .state {
-    font-size: 12px;
-    color: #1a7f37;
-    background: #dafbe1;
+    display: inline-block;
     border-radius: 15px;
     padding: 3px 8px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .state--open {
+    color: #1a7f37;
+    background: #dafbe1;
+  }
+  .state--draft {
+    color: #57606a;
+    background: #eaeef2;
+  }
+  .state--merged {
+    color: #8250df;
+    background: #fbefff;
+  }
+  .state--closed {
+    color: #cf222e;
+    background: #ffebe9;
+  }
+  .review-state {
+    display: inline-block;
+    border-radius: 15px;
+    padding: 3px 8px;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .review-state--approved {
+    color: #1a7f37;
+    background: #dafbe1;
+  }
+  .review-state--changes_requested {
+    color: #9a6700;
+    background: #fff8c5;
+  }
+  .review-state--review_required {
+    color: #0969da;
+    background: #ddf4ff;
+  }
+  .review-state--none,
+  .review-state--unavailable,
+  .muted {
+    color: #8c959f;
+  }
+  .reviewer {
+    display: block;
+    color: #0969da;
+    white-space: nowrap;
+  }
+  .reviewer-note {
+    display: block;
+    color: #9a6700;
+    font-size: 12px;
+    white-space: nowrap;
   }
   .pagination {
     display: flex;
@@ -670,7 +771,7 @@
     font-size: 12px;
   }
   footer {
-    max-width: 1180px;
+    max-width: 1560px;
     padding: 0 20px 25px;
     margin: auto;
     color: #57606a;
@@ -696,14 +797,47 @@
       transition: none !important;
     }
   }
+  @media (max-width: 1050px) {
+    main {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .credentials,
+    .repositories,
+    .editor,
+    .results {
+      grid-column: 1;
+      grid-row: auto;
+    }
+    .credentials {
+      order: 1;
+    }
+    .repositories {
+      order: 2;
+    }
+    .editor {
+      order: 3;
+    }
+    .results {
+      order: 4;
+    }
+  }
   @media (max-width: 700px) {
     .topbar {
       align-items: flex-start;
       gap: 10px;
       flex-direction: column;
     }
+    .editor .section-heading {
+      align-items: stretch;
+      flex-direction: column;
+    }
     .filter-actions {
+      justify-content: flex-start;
       margin-top: 10px;
+    }
+    .filter-actions select,
+    .filter-actions input {
+      flex: 1 1 100%;
     }
     .card {
       padding: 14px;

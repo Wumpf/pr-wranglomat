@@ -7,6 +7,7 @@ it('normalizes merged state and filterable fields', () => {
       html_url: 'u',
       title: 'T',
       state: 'closed',
+      review_state: 'approved',
       draft: false,
       user: { login: 'a' },
       labels: [{ name: 'bug' }],
@@ -26,5 +27,6 @@ it('normalizes merged state and filterable fields', () => {
     's',
   );
   expect(pr.state).toBe('merged');
+  expect(pr.review_state).toBe('approved');
   expect(pr.labels).toEqual(['bug']);
 });

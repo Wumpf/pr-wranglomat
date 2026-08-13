@@ -1,9 +1,10 @@
-import type { PullRequest } from './pullRequest';
+import type { PullRequest, ReviewState } from './pullRequest';
 export interface GitHubPullRequest {
   number: number;
   html_url: string;
   title: string;
   state: 'open' | 'closed';
+  review_state?: ReviewState | null;
   draft?: boolean;
   user?: { login: string } | null;
   labels?: Array<{ name: string }>;
@@ -38,6 +39,7 @@ export function normalizePullRequest(
     url: raw.html_url,
     title: raw.title,
     state: merged ? 'merged' : raw.state,
+    review_state: raw.review_state ?? null,
     draft: raw.draft ?? false,
     author: raw.user?.login ?? null,
     labels: (raw.labels ?? []).map((x) => x.name),
@@ -57,6 +59,7 @@ export function normalizePullRequest(
       url: true,
       title: true,
       state: true,
+      review_state: raw.review_state !== undefined,
       draft: true,
       author: Boolean(raw.user),
       labels: raw.labels !== undefined && (raw.labels_complete ?? true),

@@ -18,6 +18,7 @@ const stringFields = new Set([
   'url',
   'title',
   'state',
+  'review_state',
   'author',
   'base',
   'head',
