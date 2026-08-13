@@ -31,6 +31,7 @@ const keywords = new Set([
   'NONE',
   'IS',
   'NULL',
+  'EMPTY',
   'ORDER',
   'BY',
   'ASC',
@@ -74,7 +75,9 @@ export function lex(input: string): Token[] {
         } else value += input[i++];
       }
       if (input[i] !== quote)
-        throw new SyntaxError(`Unterminated string at ${start + 1}:1`);
+        throw new SyntaxError(
+          `Unterminated string at ${position(input, start)}`,
+        );
       i++;
       out.push({ kind: 'string', value, start, end: i });
       continue;
@@ -119,8 +122,15 @@ export function lex(input: string): Token[] {
       out.push({ kind: 'operator', value: op[0], start, end: i });
       continue;
     }
-    throw new SyntaxError(`Unexpected character '${c}' at ${start + 1}:1`);
+    throw new SyntaxError(
+      `Unexpected character '${c}' at ${position(input, start)}`,
+    );
   }
   out.push({ kind: 'eof', value: '', start: i, end: i });
   return out;
+}
+
+function position(input: string, offset: number): string {
+  const lines = input.slice(0, offset).split('\n');
+  return `${lines.length}:${lines[lines.length - 1].length + 1}`;
 }

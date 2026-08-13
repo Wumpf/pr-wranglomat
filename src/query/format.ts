@@ -13,6 +13,8 @@ function formatNode(node: QueryAst): string {
   if (node.kind === 'not') return `NOT ${formatNode(node.expression)}`;
   if (node.kind === 'nullcheck')
     return `${node.field} IS ${node.not ? 'NOT ' : ''}NULL`;
+  if (node.kind === 'emptycheck')
+    return `${node.field} IS ${node.not ? 'NOT ' : ''}EMPTY`;
   if (node.kind === 'collection')
     return `${node.field} ${node.op} ${list(node.value)}`;
   return `${node.field} ${node.op} ${Array.isArray(node.value) ? list(node.value) : literal(node.value)}`;

@@ -34,6 +34,11 @@ export function validateTypes(node: QueryAst, diagnostics: Diagnostic[]) {
     validateTypes(node.expression, diagnostics);
     return;
   }
+  if (node.kind === 'emptycheck') {
+    if (!collectionFields.has(node.field))
+      diagnostics.push(diag(`${node.field} is not a collection field`, node));
+    return;
+  }
   if (node.kind === 'nullcheck') {
     if (
       !collectionFields.has(node.field) &&

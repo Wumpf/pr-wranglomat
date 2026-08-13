@@ -13,6 +13,7 @@ import { GraphQLSource } from '../github/graphql';
 import { AppError } from '../domain/errors';
 import { storageChanges } from '../storage/db';
 import type { IngestionTransport, SnapshotScope } from '../domain/snapshot';
+import { formatDiagnosticLocation } from './diagnostics';
 import { pageCache } from '../storage/pageCache';
 export function createAppState() {
   let repos = $state<Repository[]>([]);
@@ -55,10 +56,11 @@ export function createAppState() {
   const apply = () => {
     const parsed = parse(source);
     diagnosticDetails = parsed.diagnostics;
-    diagnostics = parsed.diagnostics.map(
-      (x) =>
-        `${x.line ? `Line ${x.line}, column ${x.column}: ` : ''}${x.message}`,
-    );
+    const multiline = source.includes('\n');
+    diagnostics = parsed.diagnostics.map((diagnostic) => {
+      const location = formatDiagnosticLocation(diagnostic, multiline);
+      return `${location ? `${location}: ` : ''}${diagnostic.message}`;
+    });
     const compiled = parsed.filter ?? activeFilter?.lastValidAst;
     if (compiled) {
       const evaluated = evaluate(compiled, rows);

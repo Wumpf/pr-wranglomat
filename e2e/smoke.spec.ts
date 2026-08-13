@@ -228,7 +228,11 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
   await expect(page.getByText(/^Saving\./)).toBeVisible();
   await expect(page.getByText(/^Saved\./)).toBeVisible({ timeout: 2_000 });
   await editor.fill('state =');
-  await expect(page.getByRole('alert')).toBeVisible();
+  const expressionAlert = page.getByRole('alert');
+  await expect(expressionAlert).toContainText(
+    "Column 8: Expected a literal, got ''",
+  );
+  await expect(expressionAlert).not.toContainText('Line');
   await expect(page.getByRole('link', { name: /#1 Fix crash/ })).toBeVisible();
   await page.waitForTimeout(700);
 

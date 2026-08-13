@@ -6,6 +6,7 @@
     type ReviewState,
   } from '../domain/pullRequest';
   import { createAppState } from './appState.svelte';
+  import { formatDiagnosticLocation } from './diagnostics';
   const app = createAppState();
   let repoInput = '';
   let tokenInput = '';
@@ -303,7 +304,9 @@
         </div>{/if}
       <p class="help">
         {app.saveState}. {app.diagnosticDetails
-          .map((x) => (x.line ? `Line ${x.line}, column ${x.column}` : ''))
+          .map((diagnostic) =>
+            formatDiagnosticLocation(diagnostic, app.source.includes('\n')),
+          )
           .filter(Boolean)
           .join(' · ')}<br />
         Fields: <code>state</code>, <code>review_state</code>,
@@ -313,9 +316,8 @@
         <code>approved</code>, <code>changes_requested</code>, and
         <code>review_required</code> (GraphQL snapshots). GitHub treats a draft
         as <code>state = "open"</code> with <code>draft = true</code>. Operators
-        include <code>AND OR NOT IN ANY ALL NONE</code>. {app.result.length} matches{app.unknown
-          ? ` · ${app.unknown} unknown`
-          : ''}
+        include <code>AND OR NOT IN ANY ALL NONE IS EMPTY</code>. {app.result
+          .length} matches{app.unknown ? ` · ${app.unknown} unknown` : ''}
         {#if app.unavailableFields.length}<br /><strong
             >Unavailable fields:</strong
           >

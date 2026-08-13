@@ -24,7 +24,8 @@ export type QueryAst =
       op: 'ANY' | 'ALL' | 'NONE';
       value: Literal[];
     } & Span)
-  | ({ kind: 'nullcheck'; field: string; not: boolean } & Span);
+  | ({ kind: 'nullcheck'; field: string; not: boolean } & Span)
+  | ({ kind: 'emptycheck'; field: string; not: boolean } & Span);
 export interface SortClause extends Span {
   field: string;
   direction: 'ASC' | 'DESC';

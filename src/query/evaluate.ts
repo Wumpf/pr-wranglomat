@@ -66,6 +66,10 @@ function evalNode(node: QueryAst, row: PullRequest, now: Date): TriState {
     return node.not
       ? actual !== null && actual !== undefined
       : actual === null || actual === undefined;
+  if (node.kind === 'emptycheck') {
+    if (!Array.isArray(actual)) return 'unknown';
+    return node.not ? 0 < actual.length : actual.length === 0;
+  }
   const expected = node.value;
   if (node.kind === 'collection') {
     if (!Array.isArray(actual) || !Array.isArray(expected)) return 'unknown';

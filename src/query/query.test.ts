@@ -69,6 +69,8 @@ describe('query language', () => {
       'labels ANY ["bug"]',
       'labels ALL ["bug"]',
       'labels NONE ["feature"]',
+      'requested_reviewers IS EMPTY',
+      'requested_reviewers IS NOT EMPTY',
       'closed_at IS NULL',
       'closed_at IS NOT NULL',
     ])
@@ -113,6 +115,26 @@ describe('query language', () => {
     );
     expect(evaluate(falseAndUnknown.filter!, [unavailable]).unknown).toBe(0);
   });
+  it('filters collections by whether they are empty', () => {
+    const parsed = parse(
+      'state = "open" AND requested_reviewers IS EMPTY AND requested_teams IS EMPTY',
+    );
+    expect(
+      evaluate(parsed.filter!, [
+        row(),
+        row({ number: 2, requested_reviewers: ['bob'] }),
+        row({ number: 3, requested_teams: ['maintainers'] }),
+      ]).rows.map((item) => item.number),
+    ).toEqual([1]);
+
+    const notEmpty = parse('requested_reviewers IS NOT EMPTY');
+    expect(
+      evaluate(notEmpty.filter!, [
+        row(),
+        row({ number: 2, requested_reviewers: ['bob'] }),
+      ]).rows.map((item) => item.number),
+    ).toEqual([2]);
+  });
   it('requires every requested value for ALL collection comparisons', () => {
     const parsed = parse('labels ALL ["bug", "regression"]');
     expect(
@@ -131,7 +153,19 @@ describe('query language', () => {
   });
   it('reports malformed syntax with line and column', () => {
     const result = parse('state =\n');
+    expect(result.diagnostics[0].message).toBe("Expected a literal, got ''");
     expect(result.diagnostics[0].line).toBe(2);
     expect(result.diagnostics[0].column).toBe(1);
+  });
+
+  it('uses columns rather than offsets as line numbers for lexer errors', () => {
+    const singleLine = parse('state = @').diagnostics[0];
+    expect(singleLine.message).toBe("Unexpected character '@'");
+    expect(singleLine.line).toBe(1);
+    expect(singleLine.column).toBe(9);
+
+    const multiline = parse('state = "open"\n@').diagnostics[0];
+    expect(multiline.line).toBe(2);
+    expect(multiline.column).toBe(1);
   });
 });

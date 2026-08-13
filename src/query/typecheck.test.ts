@@ -10,7 +10,10 @@ describe('operator categories', () => {
   });
   it('allows collection operators only on collection fields', () => {
     expect(parse('labels ANY ["bug"]').diagnostics).toEqual([]);
+    expect(parse('labels IS EMPTY').diagnostics).toEqual([]);
+    expect(parse('labels IS NOT EMPTY').diagnostics).toEqual([]);
     expect(parse('title ANY ["bug"]').filter).toBeUndefined();
+    expect(parse('title IS EMPTY').filter).toBeUndefined();
     expect(parse('labels = "bug"').filter).toBeUndefined();
   });
 });

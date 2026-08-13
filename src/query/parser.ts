@@ -86,8 +86,12 @@ export function parse(source: string): {
     for (const clause of sort) requiredFields.add(clause.field);
     return { filter: { ast, requiredFields, sort, limit }, diagnostics };
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Invalid filter';
-    const location = message.match(/ at (\d+):(\d+)$/);
+    const rawMessage =
+      error instanceof Error ? error.message : 'Invalid filter';
+    const location = rawMessage.match(/ at (\d+):(\d+)$/);
+    const message = location
+      ? rawMessage.slice(0, -location[0].length)
+      : rawMessage;
     const line = location ? Number(location[1]) : 1;
     const column = location ? Number(location[2]) : 1;
     const offset = location
@@ -203,15 +207,24 @@ class Parser {
     if (!fields.has(field)) this.error(`Unknown field '${field}'`, fieldToken);
     if (this.consume('IS')) {
       const not = this.consume('NOT');
-      const nullToken = this.tokens[this.index];
-      this.expect('NULL');
-      return {
-        kind: 'nullcheck',
-        field,
-        not,
-        start: fieldToken.start,
-        end: nullToken.end,
-      };
+      const checkToken = this.tokens[this.index];
+      if (this.consume('NULL'))
+        return {
+          kind: 'nullcheck',
+          field,
+          not,
+          start: fieldToken.start,
+          end: checkToken.end,
+        };
+      if (this.consume('EMPTY'))
+        return {
+          kind: 'emptycheck',
+          field,
+          not,
+          start: fieldToken.start,
+          end: checkToken.end,
+        };
+      this.error('Expected NULL or EMPTY', checkToken);
     }
     const operator = this.next();
     const op = operator.value.toUpperCase();
