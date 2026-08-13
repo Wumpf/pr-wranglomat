@@ -1,0 +1,39 @@
+{
+  "name": "pr-wranglomat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "svelte-check --tsconfig ./tsconfig.json",
+    "lint": "eslint .",
+    "format": "prettier --write src e2e *.ts *.json *.html *.md",
+    "format:check": "prettier --check src e2e *.ts *.json *.html README.md",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@sveltejs/vite-plugin-svelte": "^6.2.1",
+    "dexie": "^4.2.1",
+    "svelte": "^5.38.7",
+    "vite": "^7.1.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0",
+    "@testing-library/svelte": "^5.2.8",
+    "@types/node": "^24.5.2",
+    "eslint": "^9.36.0",
+    "eslint-plugin-svelte": "^3.12.0",
+    "fake-indexeddb": "^6.2.4",
+    "jsdom": "^30.0.1",
+    "prettier": "^3.6.2",
+    "prettier-plugin-svelte": "^3.4.0",
+    "svelte-check": "^4.3.2",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.67.0",
+    "vitest": "^3.2.4"
+  }
+}
