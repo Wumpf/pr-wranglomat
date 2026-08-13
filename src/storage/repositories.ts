@@ -1,13 +1,46 @@
 import { db } from './db';
 import type { Repository } from '../domain/repository';
-import type { SnapshotResult } from '../domain/snapshot';
+import type {
+  IngestionTransport,
+  SnapshotResult,
+  SnapshotScope,
+} from '../domain/snapshot';
 import { storageChanges } from './db';
 export const repositories = {
   list: () => db.repositories.toArray(),
   get: (id: number) => db.repositories.get(id),
   save: (repo: Repository) => db.repositories.put(repo),
+  async savePreferences(
+    id: number,
+    preferences: Pick<
+      Repository,
+      | 'snapshotScope'
+      | 'ingestionTransport'
+      | 'recentCutoffDays'
+      | 'preferenceRevision'
+    >,
+  ) {
+    let saved: Repository | undefined;
+    await db.transaction('rw', db.repositories, async () => {
+      const current = await db.repositories.get(id);
+      if (
+        !current ||
+        (current.preferenceRevision ?? 0) >
+          (preferences.preferenceRevision ?? 0)
+      )
+        return;
+      saved = { ...current, ...preferences };
+      await db.repositories.put(saved);
+    });
+    return saved;
+  },
   remove: (id: number) => db.repositories.delete(id),
-  async beginSnapshot(repo: Repository, snapshotId: string) {
+  async beginSnapshot(
+    repo: Repository,
+    snapshotId: string,
+    scope: SnapshotScope = repo.snapshotScope ?? { kind: 'open' },
+    transport: IngestionTransport = repo.ingestionTransport ?? 'rest',
+  ) {
     await db.transaction('rw', db.repositories, db.snapshots, async () => {
       await db.snapshots.put({
         id: snapshotId,
@@ -19,6 +52,9 @@ export const repositories = {
         completeness: { core: false },
         count: 0,
         startedAt: new Date().toISOString(),
+        scope,
+        transport,
+        historyComplete: scope.kind === 'complete',
       });
       const current = await db.repositories.get(repo.id);
       await db.repositories.put({
@@ -36,16 +72,23 @@ export const repositories = {
     snapshotId: string,
     rows: SnapshotResult['pullRequests'],
   ) {
-    if (rows.length)
+    if (!rows.length) return;
+    await db.transaction('rw', db.pullRequests, db.snapshots, async () => {
+      const snapshot = await db.snapshots.get(snapshotId);
+      if (
+        !snapshot ||
+        snapshot.repositoryId !== repositoryId ||
+        snapshot.state !== 'building'
+      )
+        return;
       await db.pullRequests.bulkPut(
         rows.map((row) => ({ ...row, repositoryId, snapshotId })),
       );
-    const snapshot = await db.snapshots.get(snapshotId);
-    if (snapshot)
       await db.snapshots.put({
         ...snapshot,
         count: snapshot.count + rows.length,
       });
+    });
   },
   async activate(
     repo: Repository,
@@ -64,10 +107,16 @@ export const repositories = {
         if (!current || current.activeSnapshotId !== repo.activeSnapshotId)
           return;
         const previous = current.activeSnapshotId;
+        const building = await db.snapshots.get(snapshotId);
+        if (
+          !building ||
+          building.repositoryId !== repo.id ||
+          building.state !== 'building'
+        )
+          return;
         await db.pullRequests.bulkPut(
           rows.map((row) => ({ ...row, repositoryId: repo.id, snapshotId })),
         );
-        const building = await db.snapshots.get(snapshotId);
         await db.snapshots.put({
           ...(building ?? {}),
           ...metadata,
@@ -76,9 +125,15 @@ export const repositories = {
           state: 'complete',
           schemaVersion: 1,
           profile: 'core',
-          source: 'github-rest',
-          completeness: { core: true },
+          source:
+            metadata.transport === 'graphql' ? 'github-graphql' : 'github-rest',
+          completeness: metadata.completeness ?? { core: true },
           count: rows.length,
+          scope: metadata.scope ?? repo.snapshotScope ?? { kind: 'open' },
+          transport: metadata.transport ?? repo.ingestionTransport ?? 'rest',
+          historyComplete:
+            metadata.historyComplete ??
+            (metadata.scope ?? repo.snapshotScope)?.kind === 'complete',
           startedAt: building?.startedAt ?? new Date().toISOString(),
           finishedAt: new Date().toISOString(),
         });
@@ -86,7 +141,14 @@ export const repositories = {
           ...current,
           activeSnapshotId: snapshotId,
           lastSuccessfulSyncAt: new Date().toISOString(),
-          snapshotCompleteness: { core: true },
+          snapshotCompleteness: metadata.completeness ?? { core: true },
+          activeSnapshotScope: metadata.scope ??
+            repo.activeSnapshotScope ?? { kind: 'open' },
+          activeIngestionTransport:
+            metadata.transport ?? repo.activeIngestionTransport ?? 'rest',
+          historyComplete:
+            metadata.historyComplete ??
+            (metadata.scope ?? repo.activeSnapshotScope)?.kind === 'complete',
           snapshotCount: rows.length,
           requestCount: metadata.requestCount,
           rateLimitRemaining: metadata.rateLimitRemaining,
@@ -159,16 +221,23 @@ export const repositories = {
       db.repositories,
       db.snapshots,
       db.pullRequests,
+      db.pageCache,
       async () => {
         await db.snapshots.where('repositoryId').equals(id).delete();
         await db.pullRequests.where('repositoryId').equals(id).delete();
+        await db.pageCache.where('repositoryId').equals(id).delete();
         await db.repositories.put({
           ...repo,
           activeSnapshotId: undefined,
           lastSuccessfulSyncAt: undefined,
           snapshotCount: undefined,
           snapshotCompleteness: undefined,
+          activeSnapshotScope: undefined,
+          activeIngestionTransport: undefined,
+          historyComplete: undefined,
           requestCount: undefined,
+          rateLimitRemaining: undefined,
+          rateLimitResetAt: undefined,
           syncError: undefined,
           lastSyncStatus: 'never',
         });
@@ -191,10 +260,12 @@ export const repositories = {
       db.repositories,
       db.snapshots,
       db.pullRequests,
+      db.pageCache,
       async () => {
         await db.repositories.delete(id);
         await db.snapshots.where('repositoryId').equals(id).delete();
         await db.pullRequests.where('repositoryId').equals(id).delete();
+        await db.pageCache.where('repositoryId').equals(id).delete();
       },
     );
     storageChanges?.postMessage({

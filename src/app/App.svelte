@@ -138,12 +138,81 @@
               ></button
             >{/each}
         </div>{/if}{#if app.selected}<div class="actions">
+          <label for="snapshot-scope">Download scope</label>
+          <select
+            id="snapshot-scope"
+            on:change={(event) => {
+              const value = (event.currentTarget as HTMLSelectElement).value;
+              void app.setSnapshotScope(
+                value === 'complete'
+                  ? { kind: 'complete' }
+                  : value === 'recent'
+                    ? {
+                        kind: 'recent',
+                        cutoffDays: app.recentCutoffDays,
+                      }
+                    : { kind: 'open' },
+              );
+            }}
+          >
+            <option value="open" selected={app.snapshotScope.kind === 'open'}
+              >Open PRs (fast)</option
+            >
+            <option
+              value="recent"
+              selected={app.snapshotScope.kind === 'recent'}
+              >Open + recently closed (90 days)</option
+            >
+            <option
+              value="complete"
+              selected={app.snapshotScope.kind === 'complete'}
+              >Complete history (slow)</option
+            >
+          </select>
+          {#if app.snapshotScope.kind === 'recent'}
+            <label for="recent-cutoff">Closed days</label>
+            <input
+              id="recent-cutoff"
+              type="number"
+              min="1"
+              max="3650"
+              step="1"
+              value={app.recentCutoffDays}
+              on:change={(event) =>
+                void app.setRecentCutoff(
+                  Number((event.currentTarget as HTMLInputElement).value),
+                )}
+            />
+          {/if}
+          <label for="transport">Transport</label>
+          <select
+            id="transport"
+            on:change={(event) =>
+              void app.setTransport(
+                (event.currentTarget as HTMLSelectElement).value as
+                  'rest' | 'graphql',
+              )}
+          >
+            <option value="rest" selected={app.transport === 'rest'}
+              >REST (parallel + cached)</option
+            >
+            <option value="graphql" selected={app.transport === 'graphql'}
+              >GraphQL (smaller responses; no ETag cache)</option
+            >
+          </select>
           <span>
             {app.selected.fullName}<small class="repo-details">
               {app.selected.visibility} · {app.selected.snapshotCount ?? 0} PRs ·
               completeness {app.selected.snapshotCompleteness?.core
                 ? 'core complete'
-                : 'not downloaded'}
+                : 'not downloaded'} · active snapshot {app.selected
+                .historyComplete
+                ? 'complete history'
+                : app.selected.activeSnapshotScope
+                  ? app.selected.activeSnapshotScope.kind === 'recent'
+                    ? `recent (${app.selected.activeSnapshotScope.cutoffDays}d)`
+                    : 'open only'
+                  : 'not downloaded'}
               {#if app.selected.requestCount !== undefined}
                 · {app.selected.requestCount} requests{/if}
               {#if app.selected.rateLimitRemaining !== undefined}
@@ -168,6 +237,9 @@
             >Delete all local data</button
           >
         </div>{/if}
+      {#if app.historyWarning}<p class="warning" role="status">
+          {app.historyWarning}
+        </p>{/if}
       <p class="status" aria-live="polite">{app.status}</p>
     </section>
     <section class="card editor" aria-labelledby="filter-title">
@@ -498,6 +570,14 @@
   .repo-details {
     display: block;
     font-weight: 400;
+  }
+  .warning {
+    margin: 14px 0 0;
+    padding: 8px 10px;
+    color: #7d4e00;
+    background: #fff8c5;
+    border: 1px solid #d4a72c;
+    border-radius: 6px;
   }
   .status {
     margin: 14px 0 0;

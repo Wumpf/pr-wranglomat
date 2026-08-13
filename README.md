@@ -35,7 +35,7 @@ Open the preview URL printed by Vite, usually <http://localhost:4173>. The stati
 4. In PR Wranglomat, paste the token and select **Validate token**.
 5. Add a repository as `owner/name` or a GitHub URL, then select **Refresh**.
 
-The app checks `/user` and `/rate_limit`, keeps the PAT in memory only, and requires pasting it again after reload. The app checks `/user` and `/rate_limit`, keeps the PAT in memory only, and requires pasting it again after reload. GitHub login cookies cannot provide silent login to a static site. Organization SSO or approval rules may still block the token.
+The app checks `/user` and `/rate_limit`, keeps the PAT in memory only, and requires pasting it again after reload. GitHub login cookies cannot provide silent login to a static site. Organization SSO or approval rules may still block the token.
 
 Private repository metadata remains in this browser's IndexedDB until you explicitly delete it. **Forget token** only removes the in-memory credential. **Delete cached data** removes one repository's snapshot, **Remove repository** removes that repository and its cache, and **Delete all local data** clears every local filter, setting, repository, and snapshot.
 
@@ -62,6 +62,8 @@ npm run test:e2e
 state IN ["open", "merged"] AND draft = false AND age > 14d ORDER BY updated_at ASC LIMIT 200
 ```
 
-The site is static. Copy `_headers` to a host such as Cloudflare Pages or Netlify for CSP and security headers; `dist/_headers` is emitted by the build. No service worker, analytics, server, or credential persistence is used. Exported filter files contain private filter text; do not publish them.
+The site is static. Copy `_headers` to a host such as Cloudflare Pages or Netlify for CSP and security headers; `dist/_headers` is emitted by the build. No service worker, analytics, server, or credential persistence is used.
+
+Refresh defaults to **Open PRs**, which is much faster than downloading a full history. You can choose **Open + recently closed** with a configurable 1–3,650 day cutoff (90 days by default), or **Complete history**. Incomplete scopes show a warning: no-match results do not prove that omitted historical PRs are absent. REST refreshes up to four pages in parallel and stores normalized page data with ETags for later conditional requests. GraphQL is optional and requests smaller responses with cursor pagination, but does not use the REST ETag cache. Tokens and raw GitHub responses are never cached. Exported filter files contain private filter text; do not publish them.
 
 Language syntax uses field names, quoted strings, numbers, ISO dates, durations (`6h`, `14d`), lists, parentheses, and case-insensitive `AND`, `OR`, `NOT`, `IN`, `NOT IN`, `ANY`, `ALL`, `NONE`, `IS NULL`, `ORDER BY`, and `LIMIT`. GitHub login is not a supported silent authentication mechanism; use a least-privilege PAT.

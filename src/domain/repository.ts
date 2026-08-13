@@ -1,3 +1,4 @@
+import type { IngestionTransport, SnapshotScope } from './snapshot';
 export type Visibility = 'public' | 'private' | 'internal';
 export interface Repository {
   id: number;
@@ -14,6 +15,13 @@ export interface Repository {
   rateLimitRemaining?: number;
   rateLimitResetAt?: string;
   lastSyncStatus: SyncStatus;
+  snapshotScope?: SnapshotScope;
+  ingestionTransport?: IngestionTransport;
+  recentCutoffDays?: number;
+  preferenceRevision?: number;
+  activeSnapshotScope?: SnapshotScope;
+  activeIngestionTransport?: IngestionTransport;
+  historyComplete?: boolean;
 }
 export type SyncStatus =
   | 'never'

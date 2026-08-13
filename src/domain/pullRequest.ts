@@ -1,5 +1,5 @@
 export type PullRequestState = 'open' | 'closed' | 'merged';
-export type DataSource = 'github-rest' | 'snapshot-import';
+export type DataSource = 'github-rest' | 'github-graphql' | 'snapshot-import';
 export type Completeness = Record<string, boolean>;
 
 export interface PullRequest {

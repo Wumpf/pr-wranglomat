@@ -19,6 +19,7 @@ export class GitHubClient {
     credential?: Credential,
     signal?: AbortSignal,
     attempts = 3,
+    etag?: string,
   ): Promise<GitHubResponse<T>> {
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
@@ -34,6 +35,7 @@ export class GitHubClient {
             ...(credential
               ? { Authorization: `Bearer ${credential.token}` }
               : {}),
+            ...(etag ? { 'If-None-Match': etag } : {}),
           },
           signal,
         });
@@ -45,6 +47,15 @@ export class GitHubClient {
           resetHeader && /^\d+$/.test(resetHeader)
             ? new Date(Number(resetHeader) * 1000).toISOString()
             : undefined;
+        if (response.status === 304)
+          return {
+            data: undefined as T,
+            headers: response.headers,
+            link: response.headers.get('link') ?? undefined,
+            rateLimitRemaining: remaining,
+            rateLimitResetAt: resetAt,
+            requestCount: 1,
+          };
         if (!response.ok) {
           const retryHeader = response.headers.get('retry-after');
           const resetWait = resetAt

@@ -22,12 +22,25 @@ export interface Setting {
   key: string;
   value: unknown;
 }
+export interface StoredPageCache {
+  key: string;
+  repositoryId: number;
+  stream: string;
+  page: string;
+  etag: string;
+  rows: import('../domain/pullRequest').PullRequest[];
+  updatedAt: string;
+  next?: string;
+  last?: string;
+  totalPages?: number;
+}
 export class AppDatabase extends Dexie {
   repositories!: Table<Repository, number>;
   pullRequests!: Table<PullRequest, [number, string, number]>;
   snapshots!: Table<Snapshot, string>;
   filters!: Table<StoredFilter, string>;
   settings!: Table<Setting, string>;
+  pageCache!: Table<StoredPageCache, string>;
   constructor() {
     super('pr-wranglomat');
     this.version(1).stores({
@@ -37,6 +50,15 @@ export class AppDatabase extends Dexie {
       snapshots: 'id, repositoryId, state',
       filters: 'id, &nameKey, updatedAt',
       settings: 'key',
+    });
+    this.version(2).stores({
+      repositories: 'id, fullName, lastSuccessfulSyncAt',
+      pullRequests:
+        '[repositoryId+snapshotId+number], [repositoryId+snapshotId], updated_at',
+      snapshots: 'id, repositoryId, state',
+      filters: 'id, &nameKey, updatedAt',
+      settings: 'key',
+      pageCache: 'key, repositoryId, [repositoryId+stream], updatedAt',
     });
   }
 }

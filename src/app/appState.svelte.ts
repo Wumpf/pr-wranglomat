@@ -9,8 +9,11 @@ import { parse } from '../query/parser';
 import { evaluate } from '../query/evaluate';
 import { auth } from '../github/auth';
 import { GitHubSource } from '../github/sync';
+import { GraphQLSource } from '../github/graphql';
 import { AppError } from '../domain/errors';
 import { storageChanges } from '../storage/db';
+import type { IngestionTransport, SnapshotScope } from '../domain/snapshot';
+import { pageCache } from '../storage/pageCache';
 export function createAppState() {
   let repos = $state<Repository[]>([]);
   let selected = $state<Repository | undefined>();
@@ -38,11 +41,17 @@ export function createAppState() {
   let online = $state(
     typeof navigator === 'undefined' ? true : navigator.onLine,
   );
+  let snapshotScope = $state<SnapshotScope>({ kind: 'open' });
+  let recentCutoffDays = $state(90);
+  let transport = $state<IngestionTransport>('rest');
+  let activeSnapshotScope = $state<SnapshotScope | undefined>();
   let authIdentity = $state<
     | { login: string; rateLimitRemaining?: number; rateLimitResetAt?: string }
     | undefined
   >();
   let generation = 0;
+  let selectionGeneration = 0;
+  let preferenceRevision = 0;
   const apply = () => {
     const parsed = parse(source);
     diagnosticDetails = parsed.diagnostics;
@@ -167,6 +176,71 @@ export function createAppState() {
     get authIdentity() {
       return authIdentity;
     },
+    get snapshotScope() {
+      return snapshotScope;
+    },
+    get transport() {
+      return transport;
+    },
+    get recentCutoffDays() {
+      return recentCutoffDays;
+    },
+    get historyWarning() {
+      return activeSnapshotScope && activeSnapshotScope.kind !== 'complete'
+        ? 'This snapshot omits some closed and merged pull requests. A zero-match result is not proof that historical PRs are absent.'
+        : '';
+    },
+    async setSnapshotScope(scope: SnapshotScope) {
+      snapshotScope = scope;
+      if (scope.kind === 'recent') recentCutoffDays = scope.cutoffDays;
+      if (selected) {
+        const revision = ++preferenceRevision;
+        selected = {
+          ...selected,
+          snapshotScope: scope,
+          recentCutoffDays,
+          preferenceRevision: revision,
+        };
+        repos = repos.map((repo) =>
+          repo.id === selected?.id ? selected! : repo,
+        );
+        await repositories.savePreferences(selected.id, {
+          snapshotScope: cloneScope(scope),
+          ingestionTransport: transport,
+          recentCutoffDays,
+          preferenceRevision: revision,
+        });
+        if (revision === preferenceRevision)
+          status = 'Download preferences saved.';
+      }
+    },
+    async setRecentCutoff(days: number) {
+      const safe = Math.max(1, Math.min(3650, Math.trunc(days) || 90));
+      recentCutoffDays = safe;
+      await this.setSnapshotScope({ kind: 'recent', cutoffDays: safe });
+    },
+    async setTransport(value: IngestionTransport) {
+      transport = value;
+      if (selected) {
+        const revision = ++preferenceRevision;
+        selected = {
+          ...selected,
+          ingestionTransport: value,
+          preferenceRevision: revision,
+        };
+        repos = repos.map((repo) =>
+          repo.id === selected?.id ? selected! : repo,
+        );
+        await repositories.savePreferences(selected.id, {
+          snapshotScope: cloneScope(snapshotScope),
+          ingestionTransport: value,
+          recentCutoffDays,
+          preferenceRevision: revision,
+        });
+        if (revision === preferenceRevision)
+          status = 'Download preferences saved.';
+      }
+    },
     async validateToken() {
       authIdentity = await auth.validate();
       status = `Authenticated as ${authIdentity.login} · ${authIdentity.rateLimitRemaining ?? 'unknown'} requests remaining`;
@@ -178,12 +252,32 @@ export function createAppState() {
         window.addEventListener('offline', () => (online = false));
       }
       storageChanges?.addEventListener('message', async () => {
-        repos = await repositories.list();
-        savedFilters = await filters.list();
-        if (selected) {
-          selected = repos.find((repo) => repo.id === selected?.id);
-          rows = selected ? await repositories.activeRows(selected.id) : [];
+        const selectedId = selected?.id;
+        const nextRepos = await repositories.list();
+        const nextSelected = selectedId
+          ? nextRepos.find((repo) => repo.id === selectedId)
+          : undefined;
+        const nextRows = nextSelected
+          ? await repositories.activeRows(nextSelected.id)
+          : [];
+        if (selected?.id !== selectedId) return;
+        repos = nextRepos;
+        selected = nextSelected;
+        rows = nextRows;
+        if (nextSelected) {
+          snapshotScope = nextSelected.snapshotScope ?? { kind: 'open' };
+          recentCutoffDays =
+            nextSelected.recentCutoffDays ??
+            (nextSelected.snapshotScope?.kind === 'recent'
+              ? nextSelected.snapshotScope.cutoffDays
+              : 90);
+          transport = nextSelected.ingestionTransport ?? 'rest';
+          activeSnapshotScope = nextSelected.activeSnapshotScope;
+          preferenceRevision = nextSelected.preferenceRevision ?? 0;
+        } else {
+          activeSnapshotScope = undefined;
         }
+        savedFilters = await filters.list();
         if (activeFilter) {
           activeFilter =
             savedFilters.find((filter) => filter.id === activeFilter?.id) ??
@@ -210,6 +304,15 @@ export function createAppState() {
         undefined,
       );
       selected = repos.find((x) => x.id === selectedId) ?? repos[0];
+      if (selected?.snapshotScope) snapshotScope = selected.snapshotScope;
+      recentCutoffDays =
+        selected?.recentCutoffDays ??
+        (selected?.snapshotScope?.kind === 'recent'
+          ? selected.snapshotScope.cutoffDays
+          : 90);
+      if (selected?.ingestionTransport) transport = selected.ingestionTransport;
+      activeSnapshotScope = selected?.activeSnapshotScope;
+      preferenceRevision = selected?.preferenceRevision ?? 0;
       if (selected) {
         rows = await repositories.activeRows(selected.id);
         await settings.set('selectedRepository', selected.id);
@@ -255,16 +358,31 @@ export function createAppState() {
       controller = new AbortController();
       status = 'Refreshing…';
       const repoAtStart = selected;
+      const scope = cloneScope(snapshotScope);
+      const selectedTransport = transport;
       const snapshotId = crypto.randomUUID();
       try {
-        await repositories.beginSnapshot(repoAtStart, snapshotId);
-        const synced = await new GitHubSource(
-          undefined,
-          auth.credential,
-        ).createSnapshot(
+        await repositories.beginSnapshot(
+          repoAtStart,
+          snapshotId,
+          scope,
+          selectedTransport,
+        );
+        const source =
+          selectedTransport === 'graphql'
+            ? new GraphQLSource(undefined, undefined, auth.credential)
+            : new GitHubSource(undefined, auth.credential);
+        const synced = await source.createSnapshot(
           repoAtStart,
           {
             snapshotId,
+            scope,
+            transport: selectedTransport,
+            concurrency: 4,
+            cache:
+              selectedTransport === 'rest'
+                ? pageCache.forRepository(repoAtStart.id)
+                : undefined,
             onPage: (pageRows) =>
               repositories.stageRows(repoAtStart.id, snapshotId, pageRows),
           },
@@ -309,9 +427,11 @@ export function createAppState() {
         }
         repos = await repositories.list();
         selected = repos.find((x) => x.id === selected?.id);
+        if (selected?.id !== repoAtStart.id) return;
         rows = synced.pullRequests;
         apply();
-        status = `Ready · ${rows.length} pull requests`;
+        activeSnapshotScope = scope;
+        status = `Ready · ${rows.length} pull requests (${scopeLabel(scope)}, ${selectedTransport.toUpperCase()})`;
       } catch (error) {
         const syncStatus =
           error instanceof AppError && error.code === 'cancelled'
@@ -344,9 +464,21 @@ export function createAppState() {
       status = 'Refresh cancelled; previous snapshot remains active.';
     },
     async select(repo: Repository) {
+      const selection = ++selectionGeneration;
       selected = repo;
+      snapshotScope = repo.snapshotScope ?? { kind: 'open' };
+      recentCutoffDays =
+        repo.recentCutoffDays ??
+        (repo.snapshotScope?.kind === 'recent'
+          ? repo.snapshotScope.cutoffDays
+          : 90);
+      transport = repo.ingestionTransport ?? 'rest';
+      activeSnapshotScope = repo.activeSnapshotScope;
+      preferenceRevision = repo.preferenceRevision ?? 0;
       await settings.set('selectedRepository', repo.id);
-      rows = await repositories.activeRows(repo.id);
+      const nextRows = await repositories.activeRows(repo.id);
+      if (selection !== selectionGeneration || selected?.id !== repo.id) return;
+      rows = nextRows;
       apply();
     },
     async selectFilter(id: string) {
@@ -483,6 +615,7 @@ export function createAppState() {
       await repositories.clearSnapshotData(id);
       if (selected?.id === id) {
         rows = [];
+        activeSnapshotScope = undefined;
         apply();
       }
       repos = await repositories.list();
@@ -512,6 +645,16 @@ export function createAppState() {
   };
 }
 
+function cloneScope(scope: SnapshotScope): SnapshotScope {
+  return scope.kind === 'recent'
+    ? { kind: 'recent', cutoffDays: scope.cutoffDays }
+    : { kind: scope.kind };
+}
+function scopeLabel(scope: SnapshotScope): string {
+  if (scope.kind === 'open') return 'open PRs';
+  if (scope.kind === 'complete') return 'complete history';
+  return `open + closed (${scope.cutoffDays}d)`;
+}
 function nextAvailableName(base: string, existing: StoredFilter[]): string {
   const keys = new Set(existing.map((filter) => filter.nameKey));
   if (!keys.has(base.trim().toLocaleLowerCase())) return base;

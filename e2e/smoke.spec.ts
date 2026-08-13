@@ -107,6 +107,22 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
     page.getByRole('link', { name: /#2 Add feature/ }),
   ).toBeVisible();
   await expect(page.getByText(/2 PRs/).first()).toBeVisible();
+  const historyWarning = page.getByText(
+    /snapshot omits some closed and merged/i,
+  );
+  await expect(historyWarning).toBeVisible();
+  await page.getByLabel('Download scope').selectOption('complete');
+  await expect(historyWarning).toBeVisible();
+  await page.getByLabel('Download scope').selectOption('recent');
+  await page.getByLabel('Closed days').fill('120');
+  await page.getByLabel('Closed days').blur();
+  await page.getByLabel('Transport').selectOption('graphql');
+  await expect(page.getByText('Download preferences saved.')).toBeVisible();
+  await page.reload();
+  await expect(page.getByLabel('Download scope')).toHaveValue('recent');
+  await expect(page.getByLabel('Closed days')).toHaveValue('120');
+  await expect(page.getByLabel('Transport')).toHaveValue('graphql');
+  await expect(historyWarning).toBeVisible();
 
   await page.getByRole('button', { name: 'New', exact: true }).click();
   await expect(page.getByLabel('Filter name')).toHaveValue('New filter');

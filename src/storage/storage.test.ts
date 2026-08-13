@@ -2,10 +2,28 @@ import { beforeEach, expect, it } from 'vitest';
 import { db } from './db';
 import { filters } from './filters';
 import { repositories } from './repositories';
+import { pageCacheFor } from './pageCache';
 beforeEach(async () => {
   await db.delete();
   await db.open();
 });
+it('preserves cached pagination metadata for 304 revalidation', async () => {
+  const cache = pageCacheFor(1);
+  await cache.set({
+    key: '1|open|open|1',
+    etag: 'etag',
+    rows: [],
+    updatedAt: '2024-01-01T00:00:00Z',
+    next: 'https://api.github.com/repos/acme/app/pulls?page=2',
+    last: 'https://api.github.com/repos/acme/app/pulls?page=4',
+    totalPages: 4,
+  });
+  await expect(cache.get('1|open|open|1')).resolves.toMatchObject({
+    totalPages: 4,
+    next: 'https://api.github.com/repos/acme/app/pulls?page=2',
+  });
+});
+
 it('enforces unique case-folded filter names', async () => {
   await filters.create('Review queue');
   await expect(filters.create('review queue')).rejects.toThrow();
@@ -64,6 +82,22 @@ it('rejects a stale concurrent activation inside the transaction', async () => {
   expect((await repositories.get(repo.id))?.activeSnapshotId).toBe('first');
 });
 
+it('cannot reactivate a building snapshot after cached data was deleted', async () => {
+  const repo = {
+    id: 10,
+    fullName: 'acme/deleted',
+    visibility: 'private' as const,
+    defaultBranch: 'main',
+    lastSyncStatus: 'never' as const,
+  };
+  await repositories.save(repo);
+  await repositories.beginSnapshot(repo, 'deleted-build');
+  await repositories.clearSnapshotData(repo.id);
+  expect(await repositories.activate(repo, 'deleted-build', [])).toBe(false);
+  expect((await repositories.get(repo.id))?.activeSnapshotId).toBeUndefined();
+  expect(await db.snapshots.get('deleted-build')).toBeUndefined();
+});
+
 it('does not let a discarded stale generation erase a newer active snapshot', async () => {
   const repo = {
     id: 8,
@@ -75,6 +109,7 @@ it('does not let a discarded stale generation erase a newer active snapshot', as
   await repositories.save(repo);
   await repositories.beginSnapshot(repo, 'stale');
   const building = await repositories.get(repo.id);
+  await repositories.beginSnapshot(building!, 'newer');
   await repositories.activate(building!, 'newer', []);
   await repositories.discardSnapshot(repo, 'stale', 'cancelled');
   expect((await repositories.get(repo.id))?.activeSnapshotId).toBe('newer');

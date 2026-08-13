@@ -10,6 +10,10 @@ export interface GitHubPullRequest {
   assignees?: Array<{ login: string }>;
   requested_reviewers?: Array<{ login: string }>;
   requested_teams?: Array<{ name: string }>;
+  requested_reviewers_complete?: boolean;
+  requested_teams_complete?: boolean;
+  labels_complete?: boolean;
+  assignees_complete?: boolean;
   base: { ref: string };
   head: { ref: string };
   milestone?: { title: string } | null;
@@ -55,10 +59,15 @@ export function normalizePullRequest(
       state: true,
       draft: true,
       author: Boolean(raw.user),
-      labels: raw.labels !== undefined,
-      assignees: raw.assignees !== undefined,
-      requested_reviewers: raw.requested_reviewers !== undefined,
-      requested_teams: raw.requested_teams !== undefined,
+      labels: raw.labels !== undefined && (raw.labels_complete ?? true),
+      assignees:
+        raw.assignees !== undefined && (raw.assignees_complete ?? true),
+      requested_reviewers:
+        raw.requested_reviewers !== undefined &&
+        (raw.requested_reviewers_complete ?? true),
+      requested_teams:
+        raw.requested_teams !== undefined &&
+        (raw.requested_teams_complete ?? true),
       base: true,
       head: true,
       milestone: raw.milestone !== undefined,
