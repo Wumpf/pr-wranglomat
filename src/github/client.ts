@@ -12,7 +12,7 @@ export interface GitHubResponse<T> {
 export class GitHubClient {
   constructor(
     private readonly origin = 'https://api.github.com',
-    private readonly fetcher: typeof fetch = fetch,
+    private readonly fetcher: typeof fetch = globalThis.fetch.bind(globalThis),
   ) {}
   async request<T>(
     path: string,

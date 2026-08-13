@@ -22,20 +22,33 @@ const pullRequest = (number: number, title: string, labels: string[]) => ({
 
 async function mockGitHub(page: Page) {
   await page.route('https://api.github.com/**', async (route) => {
-    const url = new URL(route.request().url());
-    expect(route.request().headers().authorization).toBe('Bearer test-token');
+    const request = route.request();
+    const cors = {
+      'access-control-allow-origin': 'http://127.0.0.1:4173',
+      'access-control-allow-methods': 'GET, OPTIONS',
+      'access-control-allow-headers': 'Authorization, Accept',
+      'access-control-expose-headers': 'Link, X-RateLimit-Remaining',
+    };
+    if (request.method() === 'OPTIONS') {
+      await route.fulfill({ status: 204, headers: cors });
+      return;
+    }
+    const url = new URL(request.url());
+    expect(request.headers().authorization).toBe('Bearer test-token');
     if (url.pathname === '/user') {
-      await route.fulfill({ json: { login: 'octocat' } });
+      await route.fulfill({ headers: cors, json: { login: 'octocat' } });
       return;
     }
     if (url.pathname === '/rate_limit') {
       await route.fulfill({
+        headers: cors,
         json: { rate: { remaining: 4998, reset: 2_000_000_000 } },
       });
       return;
     }
     if (url.pathname === '/repos/acme/app') {
       await route.fulfill({
+        headers: cors,
         json: {
           id: 7,
           full_name: 'acme/app',
@@ -49,6 +62,7 @@ async function mockGitHub(page: Page) {
       const pageNumber = url.searchParams.get('page');
       await route.fulfill({
         headers: {
+          ...cors,
           'content-type': 'application/json',
           'x-ratelimit-remaining': pageNumber === '2' ? '4996' : '4997',
           ...(pageNumber === '2'
@@ -73,9 +87,14 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
   page,
   context,
 }) => {
+  page.on('console', (message) => {
+    if (message.type() === 'error') console.error(message.text());
+  });
+  page.on('requestfailed', (request) =>
+    console.error(request.url(), request.failure()?.errorText),
+  );
   await mockGitHub(page);
   await page.goto('/');
-
   await page.getByLabel('Personal access token').fill('test-token');
   await page.getByRole('button', { name: 'Validate token' }).click();
   await expect(page.getByText(/octocat.*4998 remaining/)).toBeVisible();
@@ -90,8 +109,10 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
   await expect(page.getByText(/2 PRs/).first()).toBeVisible();
 
   await page.getByRole('button', { name: 'New', exact: true }).click();
+  await expect(page.getByLabel('Filter name')).toHaveValue('New filter');
   const editor = page.getByLabel('Filter expression');
   await editor.fill('state = "open"');
+  await expect(page.getByText(/^Saving\./)).toBeVisible();
   await expect(page.getByText(/^Saved\./)).toBeVisible({ timeout: 2_000 });
   await editor.fill('state =');
   await expect(page.getByRole('alert')).toBeVisible();
