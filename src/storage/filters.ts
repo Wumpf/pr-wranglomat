@@ -2,12 +2,7 @@ import { db, storageChanges, type StoredFilter } from './db';
 import { parse } from '../query/parser';
 const MAX_EXPORT = 1_000_000;
 export const filters = {
-  async list() {
-    const values = await db.filters.orderBy('updatedAt').reverse().toArray();
-    return values.sort(
-      (a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)),
-    );
-  },
+  list: () => db.filters.orderBy('updatedAt').reverse().toArray(),
   get: (id: string) => db.filters.get(id),
   async save(filter: StoredFilter) {
     const name = filter.name.trim();
@@ -87,12 +82,11 @@ export const filters = {
       {
         version: 1,
         filters: filtersToExport.map(
-          ({ name, source, languageVersion, repositoryScope, pinned }) => ({
+          ({ name, source, languageVersion, repositoryScope }) => ({
             name,
             source,
             languageVersion,
             repositoryScope,
-            pinned,
           }),
         ),
       },
@@ -142,7 +136,6 @@ export const filters = {
         repositoryScope: filter.repositoryScope ?? 'all',
         createdAt: now,
         updatedAt: now,
-        pinned: Boolean(filter.pinned),
       });
     }
     await db.transaction('rw', db.filters, async () => {

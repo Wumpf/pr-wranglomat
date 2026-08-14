@@ -21,7 +21,6 @@ export function createAppState() {
   let rows = $state<PullRequest[]>([]);
   let savedFilters = $state<StoredFilter[]>([]);
   let activeFilter = $state<StoredFilter | undefined>();
-  let filterName = $state('');
   let source = $state('');
   let diagnostics = $state<string[]>([]);
   let diagnosticDetails = $state<
@@ -37,7 +36,6 @@ export function createAppState() {
   let saveState = $state('Saved');
   let controller: AbortController | undefined;
   let sourceSavePromise: Promise<boolean> | undefined;
-  let nameSavePromise: Promise<boolean> | undefined;
   const sourceRevisions = new Map<string, number>();
   const nameRevisions = new Map<string, number>();
   let online = $state(
@@ -54,6 +52,7 @@ export function createAppState() {
   let tokenConfigured = $state(auth.configured);
   let generation = 0;
   let selectionGeneration = 0;
+  let filterSelectionGeneration = 0;
   let preferenceRevision = 0;
   const apply = () => {
     const parsed = parse(source);
@@ -116,18 +115,11 @@ export function createAppState() {
     const current = activeFilter;
     if (!current) return true;
     try {
-      const pendingWrites = [sourceSavePromise, nameSavePromise].filter(
-        (pending): pending is Promise<boolean> => Boolean(pending),
-      );
-      if (pendingWrites.length) {
-        const results = await Promise.all(pendingWrites);
-        if (results.includes(false)) return false;
-      }
+      if (sourceSavePromise && !(await sourceSavePromise)) return false;
       const next = (await filters.get(current.id)) ?? current;
       savedFilters = await filters.list();
       if (activeFilter?.id === current.id) {
         activeFilter = next;
-        filterName = next.name;
         saveState = diagnostics.length ? 'Invalid draft' : 'Saved';
       }
       return true;
@@ -154,9 +146,6 @@ export function createAppState() {
     },
     get activeFilter() {
       return activeFilter;
-    },
-    get filterName() {
-      return filterName;
     },
     get source() {
       return source;
@@ -323,14 +312,11 @@ export function createAppState() {
           );
           if (refreshed) {
             const keepSource = Boolean(sourceSavePromise);
-            const keepName = Boolean(nameSavePromise);
             activeFilter = refreshed;
             if (!keepSource) source = refreshed.source;
-            if (!keepName) filterName = refreshed.name;
           } else if (savedFilters.length) {
             activeFilter = savedFilters[0];
             source = activeFilter.source;
-            filterName = activeFilter.name;
           }
         }
         apply();
@@ -353,7 +339,6 @@ export function createAppState() {
         savedFilters.find((filter) => filter.id === activeId) ??
         savedFilters[0];
       source = activeFilter.source;
-      filterName = activeFilter.name;
       saveState = 'Saved';
       const selectedId = await settings.get<number | undefined>(
         'selectedRepository',
@@ -540,61 +525,44 @@ export function createAppState() {
       apply();
     },
     async selectFilter(id: string) {
+      const selection = ++filterSelectionGeneration;
       if (!(await flushPendingEdits())) return;
-      const chosen = savedFilters.find((item) => item.id === id);
-      if (!chosen) return;
+      if (selection !== filterSelectionGeneration) return;
+      const chosen = await filters.get(id);
+      if (!chosen || selection !== filterSelectionGeneration) return;
       activeFilter = chosen;
-      filterName = chosen.name;
       source = chosen.source;
       saveState = parse(source).diagnostics.length ? 'Invalid draft' : 'Saved';
       await settings.set('activeFilter', chosen.id);
       apply();
     },
     async newFilter(name = 'New filter') {
+      ++filterSelectionGeneration;
       if (!(await flushPendingEdits())) return;
       const created = await filters.create(
         nextAvailableName(name, savedFilters),
       );
       activeFilter = created;
-      filterName = created.name;
       source = '';
       savedFilters = await filters.list();
       saveState = 'Saved';
       await settings.set('activeFilter', created.id);
       apply();
     },
-    renameFilter(name: string) {
+    async renameFilter(name: string) {
       if (!activeFilter) return;
-      filterName = name;
-      saveState = 'Saving';
       const filterId = activeFilter.id;
+      if (!(await flushPendingEdits())) return;
       const revision = (nameRevisions.get(filterId) ?? 0) + 1;
+      const next = await filters.saveName(filterId, name, revision);
+      if (!next) return;
       nameRevisions.set(filterId, revision);
-      const previous = nameSavePromise;
-      const pending = (async () => {
-        if (previous) await previous;
-        if (nameRevisions.get(filterId) !== revision) return true;
-        try {
-          const next = await filters.saveName(filterId, name, revision);
-          if (!next || nameRevisions.get(filterId) !== revision) return true;
-          if (activeFilter?.id === filterId) {
-            activeFilter = next;
-          }
-          savedFilters = await filters.list();
-          if (activeFilter?.id === filterId) saveState = 'Saved';
-          return true;
-        } catch {
-          if (activeFilter?.id === filterId) saveState = 'Storage error';
-          return false;
-        }
-      })();
-      nameSavePromise = pending;
-      void pending.finally(() => {
-        if (nameSavePromise === pending) nameSavePromise = undefined;
-      });
+      if (activeFilter?.id === filterId) activeFilter = next;
+      savedFilters = await filters.list();
     },
     async duplicateFilter() {
       if (!activeFilter) return;
+      ++filterSelectionGeneration;
       if (!(await flushPendingEdits())) return;
       const original = activeFilter;
       const name = nextAvailableName(`${original.name} copy`, savedFilters);
@@ -609,21 +577,14 @@ export function createAppState() {
       };
       await filters.save(duplicate);
       activeFilter = duplicate;
-      filterName = duplicate.name;
       source = original.source;
       savedFilters = await filters.list();
       await settings.set('activeFilter', activeFilter.id);
       apply();
     },
-    async togglePinned() {
-      if (!activeFilter) return;
-      if (!(await flushPendingEdits())) return;
-      activeFilter = { ...activeFilter, pinned: !activeFilter.pinned };
-      await filters.save(activeFilter);
-      savedFilters = await filters.list();
-    },
     async deleteFilter() {
       if (!activeFilter) return;
+      ++filterSelectionGeneration;
       if (!(await flushPendingEdits())) return;
       const deleted = activeFilter;
       await filters.remove(deleted.id);
@@ -633,7 +594,6 @@ export function createAppState() {
         savedFilters = await filters.list();
       }
       activeFilter = savedFilters[0];
-      filterName = activeFilter.name;
       source = activeFilter.source;
       saveState = 'Saved';
       await settings.set('activeFilter', activeFilter.id);
@@ -642,10 +602,10 @@ export function createAppState() {
     },
     async restoreFilter(filter: StoredFilter | undefined) {
       if (!filter) return;
+      ++filterSelectionGeneration;
       await filters.save(filter);
       savedFilters = await filters.list();
       activeFilter = filter;
-      filterName = filter.name;
       source = filter.source;
       saveState = parse(source).diagnostics.length ? 'Invalid draft' : 'Saved';
       await settings.set('activeFilter', filter.id);
@@ -655,6 +615,7 @@ export function createAppState() {
       return filters.export(savedFilters);
     },
     async importFilters(value: string) {
+      ++filterSelectionGeneration;
       await filters.import(value);
       savedFilters = await filters.list();
       if (!savedFilters.length) {
@@ -662,7 +623,6 @@ export function createAppState() {
         savedFilters = await filters.list();
       }
       activeFilter = savedFilters[0];
-      filterName = activeFilter.name;
       source = activeFilter.source;
       saveState = 'Saved';
       await settings.set('activeFilter', activeFilter.id);
@@ -698,10 +658,11 @@ export function createAppState() {
     },
     async clearData() {
       generation++;
+      ++filterSelectionGeneration;
       controller?.abort();
       controller = undefined;
       busy = false;
-      await Promise.all([sourceSavePromise, nameSavePromise]);
+      await sourceSavePromise;
       await repositories.clear();
       repos = [];
       selected = undefined;
@@ -710,7 +671,6 @@ export function createAppState() {
       await filters.create('My filter');
       savedFilters = await filters.list();
       activeFilter = savedFilters[0];
-      filterName = activeFilter.name;
       source = activeFilter.source;
       saveState = 'Saved';
       await settings.set('activeFilter', activeFilter.id);

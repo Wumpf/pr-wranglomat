@@ -16,6 +16,11 @@
   let tokenInput = '';
   let message = '';
   let undoFilter: Awaited<ReturnType<typeof app.deleteFilter>>;
+  let nameDialog: HTMLDialogElement;
+  let nameDialogMode: 'create' | 'rename' = 'create';
+  let nameInput = '';
+  let nameError = '';
+  let savingName = false;
   onMount(() => app.init());
   async function add() {
     try {
@@ -28,6 +33,35 @@
   }
   function chooseFilter(event: Event) {
     void app.selectFilter((event.currentTarget as HTMLSelectElement).value);
+  }
+  function openNameDialog(mode: 'create' | 'rename') {
+    nameDialogMode = mode;
+    nameInput =
+      mode === 'rename' ? (app.activeFilter?.name ?? '') : 'New filter';
+    nameError = '';
+    nameDialog.showModal();
+  }
+  async function saveFilterName() {
+    if (!nameInput.trim()) {
+      nameError = 'Enter a filter name.';
+      return;
+    }
+    savingName = true;
+    nameError = '';
+    try {
+      if (nameDialogMode === 'create') await app.newFilter(nameInput);
+      else await app.renameFilter(nameInput);
+      nameDialog.close();
+    } catch (error) {
+      nameError =
+        error instanceof Error && error.name === 'ConstraintError'
+          ? 'A filter with this name already exists.'
+          : error instanceof Error
+            ? error.message
+            : 'Could not save the filter name.';
+    } finally {
+      savingName = false;
+    }
   }
   function statusLabel(status: PullRequestStatus): string {
     const labels: Record<PullRequestStatus, string> = {
@@ -271,7 +305,7 @@
             Choose a filter to edit. Every change is saved automatically.
           </p>
         </div>
-        <button class="secondary" on:click={() => app.newFilter()}
+        <button class="secondary" on:click={() => openNameDialog('create')}
           >New filter</button
         >
       </div>
@@ -291,25 +325,9 @@
           </select>
         </div>
         {#if app.activeFilter}
-          <div class="filter-name">
-            <label for="filter-name">Filter name</label>
-            <input
-              id="filter-name"
-              aria-label="Filter name"
-              value={app.filterName}
-              on:input={(e) =>
-                app.renameFilter((e.currentTarget as HTMLInputElement).value)}
-            />
-          </div>
           <div class="filter-actions">
-            <button
-              class="secondary"
-              aria-pressed={app.activeFilter.pinned ?? false}
-              title="Pinned filters stay at the top of the saved filter list"
-              on:click={() => app.togglePinned()}
-              >{app.activeFilter.pinned
-                ? 'Remove from top'
-                : 'Keep on top'}</button
+            <button class="secondary" on:click={() => openNameDialog('rename')}
+              >Rename</button
             >
             <button class="secondary" on:click={() => app.duplicateFilter()}
               >Duplicate</button
@@ -333,7 +351,8 @@
       <div class="expression-heading">
         <label for="filter-expression">Filter expression</label>
         <span id="filter-expression-help">
-          Changes apply now and save automatically to “{app.filterName}”.
+          Changes apply now and save automatically to “{app.activeFilter
+            ?.name}”.
         </span>
       </div>
       <textarea
@@ -477,6 +496,36 @@
           </nav>{/if}{/if}
     </section>
   </main>
+  <dialog bind:this={nameDialog} aria-labelledby="filter-name-dialog-title">
+    <form
+      on:submit={(event) => {
+        event.preventDefault();
+        void saveFilterName();
+      }}
+    >
+      <h2 id="filter-name-dialog-title">
+        {nameDialogMode === 'create' ? 'Create filter' : 'Rename filter'}
+      </h2>
+      <label for="filter-name">Filter name</label>
+      <input id="filter-name" bind:value={nameInput} autocomplete="off" />
+      {#if nameError}<p class="dialog-error" role="alert">{nameError}</p>{/if}
+      <div class="dialog-actions">
+        <button
+          type="button"
+          class="secondary"
+          disabled={savingName}
+          on:click={() => nameDialog.close()}>Cancel</button
+        >
+        <button type="submit" disabled={savingName}
+          >{savingName
+            ? 'Saving…'
+            : nameDialogMode === 'create'
+              ? 'Create'
+              : 'Rename'}</button
+        >
+      </div>
+    </form>
+  </dialog>
   <footer>
     <p aria-live="polite">{message}</p>
     <p>
@@ -608,8 +657,8 @@
   }
   .inline input,
   .editor textarea,
-  .filter-management input,
-  .filter-management select {
+  .filter-management select,
+  dialog input {
     border: 1px solid #afb8c1;
     border-radius: 6px;
     padding: 7px 9px;
@@ -694,19 +743,17 @@
   }
   .filter-management {
     display: grid;
-    grid-template-columns: minmax(190px, 1fr) minmax(170px, 1fr) auto;
+    grid-template-columns: minmax(190px, 1fr) auto;
     align-items: end;
     gap: 10px;
     margin-bottom: 16px;
   }
-  .filter-picker,
-  .filter-name {
+  .filter-picker {
     display: flex;
     flex-direction: column;
     gap: 4px;
   }
   .filter-picker label,
-  .filter-name label,
   .expression-heading label {
     font-weight: 600;
   }
@@ -715,6 +762,39 @@
     justify-content: flex-end;
     gap: 6px;
     flex-wrap: wrap;
+  }
+  dialog {
+    width: min(420px, calc(100% - 32px));
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    padding: 0;
+    box-shadow: 0 8px 28px rgb(140 149 159 / 30%);
+  }
+  dialog::backdrop {
+    background: rgb(31 35 40 / 45%);
+  }
+  dialog form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 20px;
+  }
+  dialog h2 {
+    margin: 0 0 4px;
+    font-size: 18px;
+  }
+  dialog label {
+    font-weight: 600;
+  }
+  .dialog-error {
+    margin: 0;
+    color: #cf222e;
+  }
+  .dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 8px;
   }
   .expression-heading {
     display: flex;

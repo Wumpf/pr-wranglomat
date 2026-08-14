@@ -220,7 +220,9 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
     page.getByText('Approved', { exact: true }).last(),
   ).toBeVisible();
   const quickFilter = page.getByLabel('Filter expression');
-  await expect(page.getByLabel('Filter name')).toHaveValue('My filter');
+  await expect(
+    page.getByLabel('Saved filter').locator('option:checked'),
+  ).toHaveText('My filter');
   await quickFilter.fill('review_state = "approved"');
   await expect(
     page.getByRole('link', { name: /#2 Add feature/ }),
@@ -246,11 +248,14 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
   await expect(historyWarning).toBeVisible();
 
   await page.getByRole('button', { name: 'New filter', exact: true }).click();
-  await expect(page.getByLabel('Filter name')).toHaveValue('New filter');
-  await page.getByRole('button', { name: 'Keep on top' }).click();
   await expect(
-    page.getByRole('button', { name: 'Remove from top' }),
+    page.getByRole('heading', { name: 'Create filter' }),
   ).toBeVisible();
+  await expect(page.getByLabel('Filter name')).toHaveValue('New filter');
+  await page.getByRole('button', { name: 'Create', exact: true }).click();
+  await expect(
+    page.getByLabel('Saved filter').locator('option:checked'),
+  ).toHaveText('New filter');
   const editor = page.getByLabel('Filter expression');
   await editor.fill('state = "open"');
   await expect(page.getByText(/^Saved\./)).toBeVisible({ timeout: 2_000 });
@@ -260,6 +265,13 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
   await expect(editor).toHaveValue('');
   await page.getByLabel('Saved filter').selectOption({ label: 'New filter' });
   await expect(editor).toHaveValue('draft = false');
+  await page.getByRole('button', { name: 'Rename', exact: true }).click();
+  const renameDialog = page.getByRole('dialog', { name: 'Rename filter' });
+  await renameDialog.getByLabel('Filter name').fill('Review queue');
+  await renameDialog.getByRole('button', { name: 'Rename' }).click();
+  await expect(
+    page.getByLabel('Saved filter').locator('option:checked'),
+  ).toHaveText('Review queue');
 
   await editor.fill('state =');
   const expressionAlert = page.getByRole('alert');
@@ -273,9 +285,6 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
   await page.reload();
   await expect(page.getByText(/Token not configured/)).toBeVisible();
   await expect(editor).toHaveValue('state =');
-  await expect(
-    page.getByRole('button', { name: 'Remove from top' }),
-  ).toBeVisible();
   await expect(page.getByRole('alert')).toBeVisible();
   await expect(page.getByRole('link', { name: /#1 Fix crash/ })).toBeVisible();
 

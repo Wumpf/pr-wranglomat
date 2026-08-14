@@ -14,7 +14,6 @@ export interface StoredFilter {
   createdAt: string;
   updatedAt: string;
   lastUsedAt?: string;
-  pinned?: boolean;
   sourceRevision?: number;
   nameRevision?: number;
 }
