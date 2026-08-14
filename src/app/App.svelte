@@ -442,7 +442,10 @@
                       >
                     {:else if !pr.reviewed_by.length}<span class="muted">—</span
                       >{/if}</td
-                  ><td>{pr.author ?? 'Unknown'}</td><td
+                  ><td
+                    >{#if pr.author}<span class="reviewer">@{pr.author}</span
+                      >{:else}Unknown{/if}</td
+                  ><td
                     >{#each pr.labels as label}<span class="label">{label}</span
                       >{/each}</td
                   ><td

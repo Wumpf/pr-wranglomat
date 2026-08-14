@@ -190,6 +190,14 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
     page.getByRole('columnheader', { name: 'Review activity' }),
   ).toBeVisible();
   await expect(page.getByRole('cell', { name: '@bob' }).first()).toBeVisible();
+  await expect(
+    page
+      .locator('.results tbody tr')
+      .first()
+      .locator('td')
+      .nth(5)
+      .locator('.reviewer'),
+  ).toHaveText('@alice');
   await expect(page.getByRole('button', { name: 'Export' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Import' })).toHaveCount(0);
   await expect(page.getByText(/2 PRs/).first()).toBeVisible();
