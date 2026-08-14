@@ -12,26 +12,24 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it('keeps temporary filters separate and flushes saved-filter edits on switch', async () => {
+it('creates a saved filter and saves every edit immediately', async () => {
   const app = createAppState();
   await app.init();
 
-  app.source = 'review_state = "approved"';
-  await app.newFilter('Review queue');
+  expect(app.activeFilter?.name).toBe('My filter');
+  expect(app.filters).toHaveLength(1);
   const savedId = app.activeFilter!.id;
 
   app.source = 'state = "open"';
   app.renameFilter('Open pull requests');
-  expect(app.filterName).toBe('Open pull requests');
 
-  await app.selectFilter('');
-  expect(app.activeFilter).toBeUndefined();
-  expect(app.source).toBe('review_state = "approved"');
+  await vi.waitFor(async () => {
+    const saved = await filters.get(savedId);
+    expect(saved?.source).toBe('state = "open"');
+    expect(saved?.name).toBe('Open pull requests');
+  });
 
-  const reloaded = createAppState();
-  await reloaded.init();
-  expect(reloaded.activeFilter).toBeUndefined();
-
+  await app.newFilter('Review queue');
   await app.selectFilter(savedId);
   expect(app.filterName).toBe('Open pull requests');
   expect(app.source).toBe('state = "open"');

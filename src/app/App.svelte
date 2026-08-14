@@ -2,11 +2,15 @@
   import { onMount } from 'svelte';
   import {
     pullRequestStatus,
+    type PullRequest,
     type PullRequestStatus,
+    type ReviewActivity,
+    type ReviewActivityState,
     type ReviewState,
   } from '../domain/pullRequest';
   import { createAppState } from './appState.svelte';
   import { formatDiagnosticLocation } from './diagnostics';
+  import FieldReference from './FieldReference.svelte';
   const app = createAppState();
   let repoInput = '';
   let tokenInput = '';
@@ -43,6 +47,23 @@
     if (reviewState === 'changes_requested') return 'Changes requested';
     if (reviewState === 'review_required') return 'Review required';
     return 'No decision';
+  }
+  function reviewActivities(
+    pullRequest: Pick<PullRequest, 'review_activity' | 'reviewed_by'>,
+  ): ReviewActivity[] {
+    return (
+      pullRequest.review_activity ??
+      pullRequest.reviewed_by.map((login) => ({ login, states: [] }))
+    );
+  }
+  function reviewActivityLabel(state: ReviewActivityState): string {
+    const labels: Record<ReviewActivityState, string> = {
+      approved: 'Approved',
+      changes_requested: 'Changes requested',
+      commented: 'Commented',
+      dismissed: 'Dismissed',
+    };
+    return labels[state];
   }
   function relativeTime(value: string): string {
     const seconds = Math.max(
@@ -247,25 +268,12 @@
         <div>
           <h2 id="filter-title">Filter editor</h2>
           <p class="hint editor-intro">
-            Choose a saved filter to edit it, or use a temporary filter without
-            changing your saved filters.
+            Choose a filter to edit. Every change is saved automatically.
           </p>
         </div>
         <button class="secondary" on:click={() => app.newFilter()}
-          >New saved filter</button
+          >New filter</button
         >
-      </div>
-      <div
-        class:temporary={!app.activeFilter}
-        class="editing-context"
-        aria-live="polite"
-      >
-        <span
-          >{app.activeFilter
-            ? 'Editing saved filter'
-            : 'Temporary filter'}</span
-        >
-        <strong>{app.activeFilter ? app.filterName : 'Not saved'}</strong>
       </div>
       <div class="filter-management">
         <div class="filter-picker">
@@ -275,9 +283,6 @@
             aria-label="Saved filter"
             on:change={chooseFilter}
           >
-            <option value="" selected={!app.activeFilter}
-              >Temporary filter (not saved)</option
-            >
             {#each app.filters as filter}<option
                 value={filter.id}
                 selected={filter.id === app.activeFilter?.id}
@@ -316,13 +321,6 @@
               }}>Delete</button
             >
           </div>
-        {:else}
-          <div class="temporary-actions">
-            <span>Edits here affect results now, but are not stored.</span>
-            <button class="secondary" on:click={() => app.saveFilter()}
-              >Save as new filter</button
-            >
-          </div>
         {/if}
         {#if undoFilter}<button
             class="secondary"
@@ -335,9 +333,7 @@
       <div class="expression-heading">
         <label for="filter-expression">Filter expression</label>
         <span id="filter-expression-help">
-          {app.activeFilter
-            ? `Changes apply now and save automatically to “${app.filterName}”.`
-            : 'Changes apply now and remain temporary until you save them.'}
+          Changes apply now and save automatically to “{app.filterName}”.
         </span>
       </div>
       <textarea
@@ -354,30 +350,24 @@
           {#each app.diagnostics as diagnostic}<div>⚠ {diagnostic}</div>{/each}
         </div>{/if}
       <p class="help" aria-live="polite">
-        {app.saveState}. {#if app.diagnostics.length && app.activeFilter}Results
-          still use the last valid expression.
+        {app.saveState}. {#if app.diagnostics.length}Results still use the last
+          valid expression.
         {/if}{app.diagnosticDetails
           .map((diagnostic) =>
             formatDiagnosticLocation(diagnostic, app.source.includes('\n')),
           )
           .filter(Boolean)
           .join(' · ')}<br />
-        Fields: <code>state</code>, <code>review_state</code>,
-        <code>requested_reviewers</code>, <code>requested_teams</code>,
-        <code>reviewed_by</code>, <code>title</code>, <code>author</code>,
-        <code>labels</code>,
-        <code>draft</code>, dates, <code>age</code>. Review states are
-        <code>approved</code>, <code>changes_requested</code>, and
-        <code>review_required</code> (GraphQL snapshots). GitHub treats a draft
-        as <code>state = "open"</code> with <code>draft = true</code>. Operators
-        include <code>AND OR NOT IN ANY ALL NONE IS EMPTY</code>. {app.result
-          .length} matches{app.unknown ? ` · ${app.unknown} unknown` : ''}
+        <strong>{app.result.length} matches</strong>{app.unknown
+          ? ` · ${app.unknown} unknown`
+          : ''}
         {#if app.unavailableFields.length}<br /><strong
             >Unavailable fields:</strong
           >
           {app.unavailableFields.join(', ')}. Results that need these fields may
           be unknown.{/if}
       </p>
+      <FieldReference />
     </section>
     <section class="card results" aria-labelledby="results-title">
       <div class="section-heading">
@@ -398,7 +388,8 @@
               ><tr
                 ><th scope="col">PR</th><th scope="col">State</th><th
                   scope="col">Review</th
-                ><th scope="col">Requested</th><th scope="col">Reviewed by</th
+                ><th scope="col">Requested</th><th scope="col"
+                  >Review activity</th
                 ><th scope="col">Author</th><th scope="col">Labels</th><th
                   scope="col">Updated</th
                 ></tr
@@ -434,9 +425,15 @@
                         class="muted">—</span
                       >{/if}</td
                   ><td class="reviewers"
-                    >{#each pr.reviewed_by ?? [] as reviewer}<span
-                        class="reviewer">@{reviewer}</span
-                      >{/each}
+                    >{#each reviewActivities(pr) as activity}<div
+                        class="review-activity"
+                      >
+                        <span class="reviewer">@{activity.login}</span>
+                        {#each activity.states as state}<span
+                            class={`review-activity-state review-activity-state--${state}`}
+                            >{reviewActivityLabel(state)}</span
+                          >{/each}
+                      </div>{/each}
                     {#if !pr.fieldCompleteness.reviewed_by}
                       <span class="reviewer-note"
                         >{pr.reviewed_by?.length
@@ -692,27 +689,6 @@
   .editor-intro {
     margin: 3px 0 0;
   }
-  .editing-context {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    margin-bottom: 12px;
-    border-left: 4px solid #0969da;
-    border-radius: 4px;
-    padding: 8px 10px;
-    background: #ddf4ff;
-    color: #0550ae;
-  }
-  .editing-context.temporary {
-    border-left-color: #6e7781;
-    background: #f6f8fa;
-    color: #57606a;
-  }
-  .editing-context span {
-    font-size: 12px;
-    font-weight: 600;
-    text-transform: uppercase;
-  }
   .filter-management {
     display: grid;
     grid-template-columns: minmax(190px, 1fr) minmax(170px, 1fr) auto;
@@ -736,14 +712,6 @@
     justify-content: flex-end;
     gap: 6px;
     flex-wrap: wrap;
-  }
-  .temporary-actions {
-    grid-column: 2 / 4;
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 10px;
-    color: #57606a;
   }
   .expression-heading {
     display: flex;
@@ -772,12 +740,6 @@
     background: #ffebe9;
     color: #cf222e;
     border-radius: 6px;
-  }
-  .help code {
-    background: #f6f8fa;
-    border: 1px solid #d0d7de;
-    border-radius: 3px;
-    padding: 1px 4px;
   }
   .empty {
     text-align: center;
@@ -872,6 +834,32 @@
     color: #0969da;
     white-space: nowrap;
   }
+  .review-activity {
+    margin-bottom: 5px;
+  }
+  .review-activity:last-child {
+    margin-bottom: 0;
+  }
+  .review-activity-state {
+    display: inline-block;
+    margin: 2px 3px 0 0;
+    border-radius: 10px;
+    padding: 1px 5px;
+    background: #ddf4ff;
+    color: #0969da;
+    font-size: 10px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .review-activity-state--approved {
+    background: #dafbe1;
+    color: #1a7f37;
+  }
+  .review-activity-state--changes_requested,
+  .review-activity-state--dismissed {
+    background: #fff8c5;
+    color: #9a6700;
+  }
   .reviewer-note {
     display: block;
     color: #9a6700;
@@ -958,12 +946,10 @@
     .filter-management {
       grid-template-columns: minmax(0, 1fr);
     }
-    .filter-actions,
-    .temporary-actions {
+    .filter-actions {
       grid-column: 1;
       justify-content: flex-start;
     }
-    .temporary-actions,
     .expression-heading {
       align-items: flex-start;
       flex-direction: column;

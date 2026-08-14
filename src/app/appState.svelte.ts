@@ -23,7 +23,6 @@ export function createAppState() {
   let activeFilter = $state<StoredFilter | undefined>();
   let filterName = $state('');
   let source = $state('');
-  let temporarySource = $state('');
   let diagnostics = $state<string[]>([]);
   let diagnosticDetails = $state<
     { message: string; line?: number; column?: number }[]
@@ -37,8 +36,6 @@ export function createAppState() {
   let busy = $state(false);
   let saveState = $state('Saved');
   let controller: AbortController | undefined;
-  let saveTimer: ReturnType<typeof setTimeout> | undefined;
-  let nameTimer: ReturnType<typeof setTimeout> | undefined;
   let sourceSavePromise: Promise<boolean> | undefined;
   let nameSavePromise: Promise<boolean> | undefined;
   const sourceRevisions = new Map<string, number>();
@@ -54,6 +51,7 @@ export function createAppState() {
     | { login: string; rateLimitRemaining?: number; rateLimitResetAt?: string }
     | undefined
   >();
+  let tokenConfigured = $state(auth.configured);
   let generation = 0;
   let selectionGeneration = 0;
   let preferenceRevision = 0;
@@ -79,56 +77,44 @@ export function createAppState() {
     page = 1;
   };
   const scheduleSave = () => {
-    if (!activeFilter) {
-      saveState = 'Not saved';
-      return;
-    }
+    if (!activeFilter) return;
     saveState = 'Saving';
-    if (saveTimer) clearTimeout(saveTimer);
     const filterId = activeFilter.id;
     const draft = source;
     const revision = (sourceRevisions.get(filterId) ?? 0) + 1;
     sourceRevisions.set(filterId, revision);
-    saveTimer = setTimeout(() => {
-      saveTimer = undefined;
-      const pending = (async () => {
-        try {
-          const stored = await filters.get(filterId);
-          if (!stored || sourceRevisions.get(filterId) !== revision)
-            return true;
-          const parsed = parse(draft);
-          const next = await filters.saveDraft(
-            filterId,
-            draft,
-            parsed.filter ?? stored.lastValidAst,
-            revision,
-          );
-          if (!next || sourceRevisions.get(filterId) !== revision) return true;
-          if (activeFilter?.id === filterId) activeFilter = next;
-          savedFilters = await filters.list();
-          if (activeFilter?.id === filterId)
-            saveState = parsed.diagnostics.length ? 'Invalid draft' : 'Saved';
-          return true;
-        } catch {
-          if (activeFilter?.id === filterId) saveState = 'Storage error';
-          return false;
-        }
-      })();
-      sourceSavePromise = pending;
-      void pending.finally(() => {
-        if (sourceSavePromise === pending) sourceSavePromise = undefined;
-      });
-    }, 600);
+    const previous = sourceSavePromise;
+    const pending = (async () => {
+      if (previous) await previous;
+      try {
+        const stored = await filters.get(filterId);
+        if (!stored || sourceRevisions.get(filterId) !== revision) return true;
+        const parsed = parse(draft);
+        const next = await filters.saveDraft(
+          filterId,
+          draft,
+          parsed.filter ?? stored.lastValidAst,
+          revision,
+        );
+        if (!next || sourceRevisions.get(filterId) !== revision) return true;
+        if (activeFilter?.id === filterId) activeFilter = next;
+        savedFilters = await filters.list();
+        if (activeFilter?.id === filterId)
+          saveState = parsed.diagnostics.length ? 'Invalid draft' : 'Saved';
+        return true;
+      } catch {
+        if (activeFilter?.id === filterId) saveState = 'Storage error';
+        return false;
+      }
+    })();
+    sourceSavePromise = pending;
+    void pending.finally(() => {
+      if (sourceSavePromise === pending) sourceSavePromise = undefined;
+    });
   };
   const flushPendingEdits = async () => {
     const current = activeFilter;
     if (!current) return true;
-    const saveSource = Boolean(saveTimer);
-    const saveName = Boolean(nameTimer);
-    if (saveTimer) clearTimeout(saveTimer);
-    if (nameTimer) clearTimeout(nameTimer);
-    saveTimer = undefined;
-    nameTimer = undefined;
     try {
       const pendingWrites = [sourceSavePromise, nameSavePromise].filter(
         (pending): pending is Promise<boolean> => Boolean(pending),
@@ -137,25 +123,8 @@ export function createAppState() {
         const results = await Promise.all(pendingWrites);
         if (results.includes(false)) return false;
       }
-      let next = (await filters.get(current.id)) ?? current;
-      if (saveSource) {
-        const revision = sourceRevisions.get(current.id) ?? 0;
-        const parsed = parse(source);
-        next =
-          (await filters.saveDraft(
-            current.id,
-            source,
-            parsed.filter ?? next.lastValidAst,
-            revision,
-          )) ?? next;
-      }
-      if (saveName) {
-        const revision = nameRevisions.get(current.id) ?? 0;
-        next =
-          (await filters.saveName(current.id, filterName, revision)) ?? next;
-      }
-      if (saveSource || saveName || pendingWrites.length)
-        savedFilters = await filters.list();
+      const next = (await filters.get(current.id)) ?? current;
+      savedFilters = await filters.list();
       if (activeFilter?.id === current.id) {
         activeFilter = next;
         filterName = next.name;
@@ -194,7 +163,6 @@ export function createAppState() {
     },
     set source(value: string) {
       source = value;
-      if (!activeFilter) temporarySource = value;
       apply();
       scheduleSave();
     },
@@ -238,7 +206,7 @@ export function createAppState() {
       return saveState;
     },
     get configured() {
-      return auth.configured;
+      return tokenConfigured;
     },
     get online() {
       return online;
@@ -354,21 +322,25 @@ export function createAppState() {
             (filter) => filter.id === activeId,
           );
           if (refreshed) {
-            const keepSource = Boolean(saveTimer || sourceSavePromise);
-            const keepName = Boolean(nameTimer || nameSavePromise);
+            const keepSource = Boolean(sourceSavePromise);
+            const keepName = Boolean(nameSavePromise);
             activeFilter = refreshed;
             if (!keepSource) source = refreshed.source;
             if (!keepName) filterName = refreshed.name;
-          } else {
+          } else if (savedFilters.length) {
             activeFilter = savedFilters[0];
-            source = activeFilter?.source ?? temporarySource;
-            filterName = activeFilter?.name ?? '';
+            source = activeFilter.source;
+            filterName = activeFilter.name;
           }
         }
         apply();
       });
       repos = await repositories.list();
       savedFilters = await filters.list();
+      if (!savedFilters.length) {
+        await filters.create('My filter');
+        savedFilters = await filters.list();
+      }
       for (const filter of savedFilters) {
         sourceRevisions.set(filter.id, filter.sourceRevision ?? 0);
         nameRevisions.set(filter.id, filter.nameRevision ?? 0);
@@ -378,12 +350,11 @@ export function createAppState() {
         undefined,
       );
       activeFilter =
-        activeId === 'temporary'
-          ? undefined
-          : (savedFilters.find((x) => x.id === activeId) ?? savedFilters[0]);
-      source = activeFilter?.source ?? temporarySource;
-      filterName = activeFilter?.name ?? '';
-      saveState = activeFilter ? 'Saved' : 'Not saved';
+        savedFilters.find((filter) => filter.id === activeId) ??
+        savedFilters[0];
+      source = activeFilter.source;
+      filterName = activeFilter.name;
+      saveState = 'Saved';
       const selectedId = await settings.get<number | undefined>(
         'selectedRepository',
         undefined,
@@ -402,15 +373,17 @@ export function createAppState() {
         rows = await repositories.activeRows(selected.id);
         await settings.set('selectedRepository', selected.id);
       }
-      if (activeFilter) await settings.set('activeFilter', activeFilter.id);
+      await settings.set('activeFilter', activeFilter.id);
       apply();
     },
     setToken(value: string) {
       auth.setToken(value);
+      tokenConfigured = true;
       authIdentity = undefined;
     },
     forgetToken() {
       auth.forget();
+      tokenConfigured = false;
       authIdentity = undefined;
       status = 'Token forgotten. Cached data remains on this device.';
     },
@@ -568,15 +541,6 @@ export function createAppState() {
     },
     async selectFilter(id: string) {
       if (!(await flushPendingEdits())) return;
-      if (!id) {
-        activeFilter = undefined;
-        filterName = '';
-        source = temporarySource;
-        saveState = 'Not saved';
-        await settings.set('activeFilter', 'temporary');
-        apply();
-        return;
-      }
       const chosen = savedFilters.find((item) => item.id === id);
       if (!chosen) return;
       activeFilter = chosen;
@@ -584,30 +548,6 @@ export function createAppState() {
       source = chosen.source;
       saveState = parse(source).diagnostics.length ? 'Invalid draft' : 'Saved';
       await settings.set('activeFilter', chosen.id);
-      apply();
-    },
-    async saveFilter() {
-      const parsed = parse(source);
-      if (!activeFilter) {
-        activeFilter = await filters.create(
-          nextAvailableName('My filter', savedFilters),
-          source,
-        );
-        filterName = activeFilter.name;
-      } else {
-        const revision = (sourceRevisions.get(activeFilter.id) ?? 0) + 1;
-        sourceRevisions.set(activeFilter.id, revision);
-        activeFilter =
-          (await filters.saveDraft(
-            activeFilter.id,
-            source,
-            parsed.filter ?? activeFilter.lastValidAst,
-            revision,
-          )) ?? activeFilter;
-      }
-      savedFilters = await filters.list();
-      await settings.set('activeFilter', activeFilter.id);
-      saveState = parsed.diagnostics.length ? 'Invalid draft' : 'Saved';
       apply();
     },
     async newFilter(name = 'New filter') {
@@ -627,34 +567,32 @@ export function createAppState() {
       if (!activeFilter) return;
       filterName = name;
       saveState = 'Saving';
-      if (nameTimer) clearTimeout(nameTimer);
       const filterId = activeFilter.id;
       const revision = (nameRevisions.get(filterId) ?? 0) + 1;
       nameRevisions.set(filterId, revision);
-      nameTimer = setTimeout(() => {
-        nameTimer = undefined;
-        const pending = (async () => {
-          if (nameRevisions.get(filterId) !== revision) return true;
-          try {
-            const next = await filters.saveName(filterId, name, revision);
-            if (!next || nameRevisions.get(filterId) !== revision) return true;
-            if (activeFilter?.id === filterId) {
-              activeFilter = next;
-              filterName = next.name;
-            }
-            savedFilters = await filters.list();
-            if (activeFilter?.id === filterId) saveState = 'Saved';
-            return true;
-          } catch {
-            if (activeFilter?.id === filterId) saveState = 'Storage error';
-            return false;
+      const previous = nameSavePromise;
+      const pending = (async () => {
+        if (previous) await previous;
+        if (nameRevisions.get(filterId) !== revision) return true;
+        try {
+          const next = await filters.saveName(filterId, name, revision);
+          if (!next || nameRevisions.get(filterId) !== revision) return true;
+          if (activeFilter?.id === filterId) {
+            activeFilter = next;
+            filterName = next.name;
           }
-        })();
-        nameSavePromise = pending;
-        void pending.finally(() => {
-          if (nameSavePromise === pending) nameSavePromise = undefined;
-        });
-      }, 600);
+          savedFilters = await filters.list();
+          if (activeFilter?.id === filterId) saveState = 'Saved';
+          return true;
+        } catch {
+          if (activeFilter?.id === filterId) saveState = 'Storage error';
+          return false;
+        }
+      })();
+      nameSavePromise = pending;
+      void pending.finally(() => {
+        if (nameSavePromise === pending) nameSavePromise = undefined;
+      });
     },
     async duplicateFilter() {
       if (!activeFilter) return;
@@ -691,11 +629,15 @@ export function createAppState() {
       const deleted = activeFilter;
       await filters.remove(deleted.id);
       savedFilters = await filters.list();
+      if (!savedFilters.length) {
+        await filters.create(nextAvailableName('New filter', [deleted]));
+        savedFilters = await filters.list();
+      }
       activeFilter = savedFilters[0];
-      filterName = activeFilter?.name ?? '';
-      source = activeFilter?.source ?? temporarySource;
-      saveState = activeFilter ? 'Saved' : 'Not saved';
-      await settings.set('activeFilter', activeFilter?.id ?? 'temporary');
+      filterName = activeFilter.name;
+      source = activeFilter.source;
+      saveState = 'Saved';
+      await settings.set('activeFilter', activeFilter.id);
       apply();
       return deleted;
     },
@@ -716,11 +658,15 @@ export function createAppState() {
     async importFilters(value: string) {
       await filters.import(value);
       savedFilters = await filters.list();
+      if (!savedFilters.length) {
+        await filters.create('My filter');
+        savedFilters = await filters.list();
+      }
       activeFilter = savedFilters[0];
-      filterName = activeFilter?.name ?? '';
-      source = activeFilter?.source ?? temporarySource;
-      saveState = activeFilter ? 'Saved' : 'Not saved';
-      await settings.set('activeFilter', activeFilter?.id ?? 'temporary');
+      filterName = activeFilter.name;
+      source = activeFilter.source;
+      saveState = 'Saved';
+      await settings.set('activeFilter', activeFilter.id);
       apply();
     },
     async removeRepository(id: number) {
@@ -756,19 +702,19 @@ export function createAppState() {
       controller?.abort();
       controller = undefined;
       busy = false;
-      if (saveTimer) clearTimeout(saveTimer);
-      if (nameTimer) clearTimeout(nameTimer);
+      await Promise.all([sourceSavePromise, nameSavePromise]);
       await repositories.clear();
       repos = [];
       selected = undefined;
       rows = [];
       result = [];
-      savedFilters = [];
-      activeFilter = undefined;
-      filterName = '';
-      temporarySource = '';
-      source = '';
-      saveState = 'Not saved';
+      await filters.create('My filter');
+      savedFilters = await filters.list();
+      activeFilter = savedFilters[0];
+      filterName = activeFilter.name;
+      source = activeFilter.source;
+      saveState = 'Saved';
+      await settings.set('activeFilter', activeFilter.id);
       diagnostics = [];
       diagnosticDetails = [];
       unknown = 0;

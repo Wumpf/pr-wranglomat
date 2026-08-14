@@ -15,5 +15,13 @@ describe('application entry point', () => {
         'PR Wranglomat',
       );
     });
+
+    const reference =
+      document.querySelector<HTMLDetailsElement>('.field-reference');
+    expect(reference?.open).toBe(false);
+    reference?.querySelector('summary')?.click();
+    expect(reference?.open).toBe(true);
+    expect(reference?.textContent).toContain('review_state');
+    expect(reference?.textContent).toContain('ORDER BY');
   });
 });

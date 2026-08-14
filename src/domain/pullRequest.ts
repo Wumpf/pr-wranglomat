@@ -1,6 +1,12 @@
 export type PullRequestState = 'open' | 'closed' | 'merged';
 export type PullRequestStatus = PullRequestState | 'draft';
 export type ReviewState = 'approved' | 'changes_requested' | 'review_required';
+export type ReviewActivityState =
+  'approved' | 'changes_requested' | 'commented' | 'dismissed';
+export interface ReviewActivity {
+  login: string;
+  states: ReviewActivityState[];
+}
 export type DataSource = 'github-rest' | 'github-graphql' | 'snapshot-import';
 export type Completeness = Record<string, boolean>;
 
@@ -19,6 +25,7 @@ export interface PullRequest {
   requested_reviewers: string[];
   requested_teams: string[];
   reviewed_by: string[];
+  review_activity?: ReviewActivity[];
   base: string;
   head: string;
   milestone: string | null;

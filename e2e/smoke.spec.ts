@@ -43,7 +43,12 @@ const graphPullRequest = (
     pageInfo: { hasNextPage: false },
   },
   reviews: {
-    nodes: [{ author: { login: 'carol' } }],
+    nodes: [
+      {
+        author: { login: 'carol' },
+        state: reviewDecision === 'APPROVED' ? 'APPROVED' : 'COMMENTED',
+      },
+    ],
     pageInfo: { hasNextPage: false },
   },
   baseRefName: 'main',
@@ -182,7 +187,7 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
     page.getByRole('columnheader', { name: 'Requested' }),
   ).toBeVisible();
   await expect(
-    page.getByRole('columnheader', { name: 'Reviewed by' }),
+    page.getByRole('columnheader', { name: 'Review activity' }),
   ).toBeVisible();
   await expect(page.getByRole('cell', { name: '@bob' }).first()).toBeVisible();
   await expect(page.getByRole('button', { name: 'Export' })).toHaveCount(0);
@@ -201,13 +206,13 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
     page.getByRole('cell', { name: 'Approved', exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole('cell', { name: '@carol' }).first(),
+    page.getByRole('cell', { name: /@carol Commented/ }).first(),
+  ).toBeVisible();
+  await expect(
+    page.getByText('Approved', { exact: true }).last(),
   ).toBeVisible();
   const quickFilter = page.getByLabel('Filter expression');
-  await expect(
-    page.getByText('Temporary filter', { exact: true }),
-  ).toBeVisible();
-  await expect(page.getByText('Not saved', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Filter name')).toHaveValue('My filter');
   await quickFilter.fill('review_state = "approved"');
   await expect(
     page.getByRole('link', { name: /#2 Add feature/ }),
@@ -232,10 +237,7 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
   await expect(page.getByLabel('Transport')).toHaveValue('graphql');
   await expect(historyWarning).toBeVisible();
 
-  await page
-    .getByRole('button', { name: 'New saved filter', exact: true })
-    .click();
-  await expect(page.getByText('Editing saved filter')).toBeVisible();
+  await page.getByRole('button', { name: 'New filter', exact: true }).click();
   await expect(page.getByLabel('Filter name')).toHaveValue('New filter');
   await page.getByRole('button', { name: 'Keep on top' }).click();
   await expect(
@@ -243,14 +245,10 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
   ).toBeVisible();
   const editor = page.getByLabel('Filter expression');
   await editor.fill('state = "open"');
-  await expect(page.getByText(/^Saving\./)).toBeVisible();
   await expect(page.getByText(/^Saved\./)).toBeVisible({ timeout: 2_000 });
 
   await editor.fill('draft = false');
-  await page.getByLabel('Saved filter').selectOption('');
-  await expect(
-    page.getByText('Temporary filter', { exact: true }),
-  ).toBeVisible();
+  await page.getByLabel('Saved filter').selectOption({ label: 'My filter' });
   await expect(editor).toHaveValue('');
   await page.getByLabel('Saved filter').selectOption({ label: 'New filter' });
   await expect(editor).toHaveValue('draft = false');
@@ -273,8 +271,14 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
   await expect(page.getByRole('alert')).toBeVisible();
   await expect(page.getByRole('link', { name: /#1 Fix crash/ })).toBeVisible();
 
+  const refresh = page.getByRole('button', { name: /Refresh/ });
+  await expect(refresh).toBeDisabled();
+  await page.getByLabel('Personal access token').fill('test-token');
+  await page.getByRole('button', { name: 'Validate token' }).click();
+  await expect(refresh).toBeEnabled();
+
   await context.setOffline(true);
-  await expect(page.getByText(/Offline · Token not configured/)).toBeVisible();
+  await expect(page.getByText(/Offline · Token in memory/)).toBeVisible();
   await editor.fill('labels ANY ["bug"]');
   await expect(page.getByRole('link', { name: /#1 Fix crash/ })).toBeVisible();
   await expect(page.getByRole('link', { name: /#2 Add feature/ })).toHaveCount(

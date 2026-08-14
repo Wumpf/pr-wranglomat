@@ -7,6 +7,7 @@ import type {
 import type { Repository } from '../domain/repository';
 import type { SnapshotResult, SyncProgress } from '../domain/snapshot';
 import { AppError } from '../domain/errors';
+import type { ReviewActivityState } from '../domain/pullRequest';
 
 interface GraphQLPage {
   repository: {
@@ -31,7 +32,7 @@ interface GraphQLResponse {
 const query = `query PullRequests($owner:String!, $name:String!, $states:[PullRequestState!], $cursor:String) {
   repository(owner:$owner, name:$name) {
     pullRequests(first:100, after:$cursor, states:$states, orderBy:{field:UPDATED_AT,direction:DESC}) {
-      nodes { number url title state reviewDecision isDraft author { login } labels(first:100) { nodes { name } pageInfo { hasNextPage } } assignees(first:100) { nodes { login } pageInfo { hasNextPage } } reviewRequests(first:100) { nodes { requestedReviewer { ... on User { login } ... on Team { name } } } pageInfo { hasNextPage } } reviews(first:100, states:[APPROVED,CHANGES_REQUESTED,COMMENTED,DISMISSED]) { nodes { author { login } } pageInfo { hasNextPage } } baseRefName headRefName createdAt updatedAt closedAt mergedAt milestone { title } }
+      nodes { number url title state reviewDecision isDraft author { login } labels(first:100) { nodes { name } pageInfo { hasNextPage } } assignees(first:100) { nodes { login } pageInfo { hasNextPage } } reviewRequests(first:100) { nodes { requestedReviewer { ... on User { login } ... on Team { name } } } pageInfo { hasNextPage } } reviews(first:100, states:[APPROVED,CHANGES_REQUESTED,COMMENTED,DISMISSED]) { nodes { author { login } state } pageInfo { hasNextPage } } baseRefName headRefName createdAt updatedAt closedAt mergedAt milestone { title } }
       pageInfo { hasNextPage endCursor }
     }
   }
@@ -298,17 +299,28 @@ export class GraphQLSource implements PullRequestSource {
       },
       { users: [], teams: [] },
     );
-    const reviewedBy = [
-      ...new Set(
-        reviews.nodes.flatMap((value) => {
-          const login =
-            value && typeof value === 'object'
-              ? (value as { author?: { login?: unknown } }).author?.login
-              : undefined;
-          return login ? [String(login)] : [];
-        }),
-      ),
-    ];
+    const reviewActivity = new Map<string, Set<ReviewActivityState>>();
+    const reviewStates: Record<string, ReviewActivityState> = {
+      APPROVED: 'approved',
+      CHANGES_REQUESTED: 'changes_requested',
+      COMMENTED: 'commented',
+      DISMISSED: 'dismissed',
+    };
+    for (const value of reviews.nodes) {
+      if (!value || typeof value !== 'object') continue;
+      const review = value as {
+        author?: { login?: unknown };
+        state?: unknown;
+      };
+      if (!review.author?.login) continue;
+      const login = String(review.author.login);
+      const states =
+        reviewActivity.get(login) ?? new Set<ReviewActivityState>();
+      const state = reviewStates[String(review.state)];
+      if (state) states.add(state);
+      reviewActivity.set(login, states);
+    }
+    const reviewedBy = [...reviewActivity.keys()];
     const complete = (value: { pageInfo?: { hasNextPage?: boolean } }) =>
       !value.pageInfo?.hasNextPage;
     const reviewState =
@@ -339,6 +351,10 @@ export class GraphQLSource implements PullRequestSource {
         })),
         requested_teams: requestedReviewers.teams.map((name) => ({ name })),
         reviewed_by: reviewedBy.map((login) => ({ login })),
+        review_activity: [...reviewActivity].map(([login, states]) => ({
+          login,
+          states: [...states],
+        })),
         requested_reviewers_complete: complete(reviewRequests),
         requested_teams_complete: complete(reviewRequests),
         reviewed_by_complete: complete(reviews),

@@ -26,7 +26,11 @@ const node = (number: number) => ({
     pageInfo: { hasNextPage: false },
   },
   reviews: {
-    nodes: [{ author: { login: 'carol' } }, { author: { login: 'carol' } }],
+    nodes: [
+      { author: { login: 'carol' }, state: 'COMMENTED' },
+      { author: { login: 'carol' }, state: 'APPROVED' },
+      { author: { login: 'dave' }, state: 'CHANGES_REQUESTED' },
+    ],
     pageInfo: { hasNextPage: false },
   },
   baseRefName: 'main',
@@ -81,7 +85,11 @@ it('paginates typed GraphQL nodes', async () => {
   expect(result.pullRequests.map((row) => row.number)).toEqual([1, 2]);
   expect(result.pullRequests[0].requested_reviewers).toEqual(['bob']);
   expect(result.pullRequests[0].requested_teams).toEqual(['platform']);
-  expect(result.pullRequests[0].reviewed_by).toEqual(['carol']);
+  expect(result.pullRequests[0].reviewed_by).toEqual(['carol', 'dave']);
+  expect(result.pullRequests[0].review_activity).toEqual([
+    { login: 'carol', states: ['commented', 'approved'] },
+    { login: 'dave', states: ['changes_requested'] },
+  ]);
   expect(result.pullRequests[0].review_state).toBe('review_required');
 });
 it('keeps every open PR while cutting old closed history', async () => {

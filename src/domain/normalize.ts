@@ -1,4 +1,4 @@
-import type { PullRequest, ReviewState } from './pullRequest';
+import type { PullRequest, ReviewActivity, ReviewState } from './pullRequest';
 export interface GitHubPullRequest {
   number: number;
   html_url: string;
@@ -12,6 +12,7 @@ export interface GitHubPullRequest {
   requested_reviewers?: Array<{ login: string }>;
   requested_teams?: Array<{ name: string }>;
   reviewed_by?: Array<{ login: string }>;
+  review_activity?: ReviewActivity[];
   requested_reviewers_complete?: boolean;
   requested_teams_complete?: boolean;
   reviewed_by_complete?: boolean;
@@ -49,6 +50,7 @@ export function normalizePullRequest(
     requested_reviewers: (raw.requested_reviewers ?? []).map((x) => x.login),
     requested_teams: (raw.requested_teams ?? []).map((x) => x.name),
     reviewed_by: (raw.reviewed_by ?? []).map((x) => x.login),
+    review_activity: raw.review_activity,
     base: raw.base.ref,
     head: raw.head.ref,
     milestone: raw.milestone?.title ?? null,
