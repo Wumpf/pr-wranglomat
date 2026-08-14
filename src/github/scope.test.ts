@@ -68,6 +68,7 @@ it('reuses a 304 cached page and gives new snapshot metadata', async () => {
         assignees: [],
         requested_reviewers: [],
         requested_teams: [],
+        reviewed_by: [],
         milestone: null,
         merged_at: null,
         fieldCompleteness: {},

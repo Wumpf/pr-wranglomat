@@ -16,6 +16,7 @@ const row = (overrides: Partial<PullRequest> = {}): PullRequest => ({
   assignees: [],
   requested_reviewers: [],
   requested_teams: [],
+  reviewed_by: [],
   base: 'main',
   head: 'fix',
   milestone: null,
@@ -37,6 +38,7 @@ const row = (overrides: Partial<PullRequest> = {}): PullRequest => ({
       'assignees',
       'requested_reviewers',
       'requested_teams',
+      'reviewed_by',
       'base',
       'head',
       'milestone',
@@ -71,10 +73,21 @@ describe('query language', () => {
       'labels NONE ["feature"]',
       'requested_reviewers IS EMPTY',
       'requested_reviewers IS NOT EMPTY',
+      'reviewed_by ANY ["carol"]',
       'closed_at IS NULL',
       'closed_at IS NOT NULL',
     ])
       expect(parse(expression).diagnostics).toEqual([]);
+  });
+  it('filters by people who submitted reviews', () => {
+    const parsed = parse('reviewed_by ANY ["carol"]');
+    expect(parsed.diagnostics).toEqual([]);
+    expect(
+      evaluate(parsed.filter!, [
+        row({ reviewed_by: ['carol'] }),
+        row({ number: 2, reviewed_by: ['bob'] }),
+      ]).rows.map((item) => item.number),
+    ).toEqual([1]);
   });
   it('filters by GitHub review state', () => {
     const parsed = parse('review_state = "approved"');

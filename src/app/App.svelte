@@ -22,9 +22,6 @@
         error instanceof Error ? error.message : 'Could not add repository.';
     }
   }
-  async function save() {
-    await app.saveFilter();
-  }
   function chooseFilter(event: Event) {
     void app.selectFilter((event.currentTarget as HTMLSelectElement).value);
   }
@@ -247,53 +244,107 @@
     </section>
     <section class="card editor" aria-labelledby="filter-title">
       <div class="section-heading">
-        <h2 id="filter-title">Filter</h2>
-        <div class="filter-actions">
-          <select aria-label="Saved filter" on:change={chooseFilter}
-            ><option value="">Unsaved filter</option
-            >{#each app.filters as filter}<option
+        <div>
+          <h2 id="filter-title">Filter editor</h2>
+          <p class="hint editor-intro">
+            Choose a saved filter to edit it, or use a temporary filter without
+            changing your saved filters.
+          </p>
+        </div>
+        <button class="secondary" on:click={() => app.newFilter()}
+          >New saved filter</button
+        >
+      </div>
+      <div
+        class:temporary={!app.activeFilter}
+        class="editing-context"
+        aria-live="polite"
+      >
+        <span
+          >{app.activeFilter
+            ? 'Editing saved filter'
+            : 'Temporary filter'}</span
+        >
+        <strong>{app.activeFilter ? app.filterName : 'Not saved'}</strong>
+      </div>
+      <div class="filter-management">
+        <div class="filter-picker">
+          <label for="saved-filter">Filter to edit</label>
+          <select
+            id="saved-filter"
+            aria-label="Saved filter"
+            on:change={chooseFilter}
+          >
+            <option value="" selected={!app.activeFilter}
+              >Temporary filter (not saved)</option
+            >
+            {#each app.filters as filter}<option
                 value={filter.id}
                 selected={filter.id === app.activeFilter?.id}
                 >{filter.name}</option
-              >{/each}</select
-          ><input
-            aria-label="Filter name"
-            value={app.activeFilter?.name ?? ''}
-            disabled={!app.activeFilter}
-            on:input={(e) =>
-              app.renameFilter((e.currentTarget as HTMLInputElement).value)}
-          /><button
-            class="secondary"
-            disabled={!app.activeFilter}
-            aria-pressed={app.activeFilter?.pinned ?? false}
-            title="Pinned filters stay at the top of the saved filter list"
-            on:click={() => app.togglePinned()}
-            >{app.activeFilter?.pinned
-              ? 'Remove from top'
-              : 'Keep on top'}</button
-          ><button class="secondary" on:click={() => app.newFilter()}
-            >New</button
-          ><button class="secondary" on:click={() => app.duplicateFilter()}
-            >Duplicate</button
-          ><button class="secondary" on:click={save}>Save</button><button
-            class="secondary"
-            on:click={async () => {
-              undoFilter = await app.deleteFilter();
-            }}
-            disabled={!app.activeFilter}>Delete</button
-          >{#if undoFilter}<button
-              class="secondary"
-              on:click={() => {
-                void app.restoreFilter(undoFilter);
-                undoFilter = undefined;
-              }}>Undo</button
-            >{/if}
+              >{/each}
+          </select>
         </div>
+        {#if app.activeFilter}
+          <div class="filter-name">
+            <label for="filter-name">Filter name</label>
+            <input
+              id="filter-name"
+              aria-label="Filter name"
+              value={app.filterName}
+              on:input={(e) =>
+                app.renameFilter((e.currentTarget as HTMLInputElement).value)}
+            />
+          </div>
+          <div class="filter-actions">
+            <button
+              class="secondary"
+              aria-pressed={app.activeFilter.pinned ?? false}
+              title="Pinned filters stay at the top of the saved filter list"
+              on:click={() => app.togglePinned()}
+              >{app.activeFilter.pinned
+                ? 'Remove from top'
+                : 'Keep on top'}</button
+            >
+            <button class="secondary" on:click={() => app.duplicateFilter()}
+              >Duplicate</button
+            >
+            <button
+              class="secondary"
+              on:click={async () => {
+                undoFilter = await app.deleteFilter();
+              }}>Delete</button
+            >
+          </div>
+        {:else}
+          <div class="temporary-actions">
+            <span>Edits here affect results now, but are not stored.</span>
+            <button class="secondary" on:click={() => app.saveFilter()}
+              >Save as new filter</button
+            >
+          </div>
+        {/if}
+        {#if undoFilter}<button
+            class="secondary"
+            on:click={() => {
+              void app.restoreFilter(undoFilter);
+              undoFilter = undefined;
+            }}>Undo delete</button
+          >{/if}
       </div>
-      <label for="filter-expression">Filter expression</label><textarea
+      <div class="expression-heading">
+        <label for="filter-expression">Filter expression</label>
+        <span id="filter-expression-help">
+          {app.activeFilter
+            ? `Changes apply now and save automatically to “${app.filterName}”.`
+            : 'Changes apply now and remain temporary until you save them.'}
+        </span>
+      </div>
+      <textarea
         id="filter-expression"
         rows="5"
         bind:value={app.source}
+        aria-describedby="filter-expression-help"
         spellcheck="false"
         placeholder={'state = "open" AND draft = false\nORDER BY updated_at DESC'}
       ></textarea>{#if app.diagnostics.length}<div
@@ -302,8 +353,10 @@
         >
           {#each app.diagnostics as diagnostic}<div>⚠ {diagnostic}</div>{/each}
         </div>{/if}
-      <p class="help">
-        {app.saveState}. {app.diagnosticDetails
+      <p class="help" aria-live="polite">
+        {app.saveState}. {#if app.diagnostics.length && app.activeFilter}Results
+          still use the last valid expression.
+        {/if}{app.diagnosticDetails
           .map((diagnostic) =>
             formatDiagnosticLocation(diagnostic, app.source.includes('\n')),
           )
@@ -311,7 +364,8 @@
           .join(' · ')}<br />
         Fields: <code>state</code>, <code>review_state</code>,
         <code>requested_reviewers</code>, <code>requested_teams</code>,
-        <code>title</code>, <code>author</code>, <code>labels</code>,
+        <code>reviewed_by</code>, <code>title</code>, <code>author</code>,
+        <code>labels</code>,
         <code>draft</code>, dates, <code>age</code>. Review states are
         <code>approved</code>, <code>changes_requested</code>, and
         <code>review_required</code> (GraphQL snapshots). GitHub treats a draft
@@ -344,9 +398,10 @@
               ><tr
                 ><th scope="col">PR</th><th scope="col">State</th><th
                   scope="col">Review</th
-                ><th scope="col">Reviewers</th><th scope="col">Author</th><th
-                  scope="col">Labels</th
-                ><th scope="col">Updated</th></tr
+                ><th scope="col">Requested</th><th scope="col">Reviewed by</th
+                ><th scope="col">Author</th><th scope="col">Labels</th><th
+                  scope="col">Updated</th
+                ></tr
               ></thead
             ><tbody
               >{#each app.pagedResult as pr}<tr
@@ -377,6 +432,18 @@
                       <span class="reviewer-note">Partial list</span>
                     {:else if !pr.requested_reviewers.length && !pr.requested_teams.length}<span
                         class="muted">—</span
+                      >{/if}</td
+                  ><td class="reviewers"
+                    >{#each pr.reviewed_by ?? [] as reviewer}<span
+                        class="reviewer">@{reviewer}</span
+                      >{/each}
+                    {#if !pr.fieldCompleteness.reviewed_by}
+                      <span class="reviewer-note"
+                        >{pr.reviewed_by?.length
+                          ? 'Partial list'
+                          : 'Unavailable'}</span
+                      >
+                    {:else if !pr.reviewed_by.length}<span class="muted">—</span
                       >{/if}</td
                   ><td>{pr.author ?? 'Unknown'}</td><td
                     >{#each pr.labels as label}<span class="label">{label}</span
@@ -530,8 +597,7 @@
     gap: 10px;
     flex-wrap: wrap;
   }
-  .inline label,
-  .editor > label {
+  .inline label {
     width: 100%;
     font-weight: 600;
     margin-bottom: -5px;
@@ -542,7 +608,8 @@
   }
   .inline input,
   .editor textarea,
-  .filter-actions select {
+  .filter-management input,
+  .filter-management select {
     border: 1px solid #afb8c1;
     border-radius: 6px;
     padding: 7px 9px;
@@ -618,26 +685,81 @@
     margin: 14px 0 0;
     color: #57606a;
   }
+  .editor .section-heading {
+    align-items: flex-start;
+    gap: 20px;
+  }
+  .editor-intro {
+    margin: 3px 0 0;
+  }
+  .editing-context {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 12px;
+    border-left: 4px solid #0969da;
+    border-radius: 4px;
+    padding: 8px 10px;
+    background: #ddf4ff;
+    color: #0550ae;
+  }
+  .editing-context.temporary {
+    border-left-color: #6e7781;
+    background: #f6f8fa;
+    color: #57606a;
+  }
+  .editing-context span {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .filter-management {
+    display: grid;
+    grid-template-columns: minmax(190px, 1fr) minmax(170px, 1fr) auto;
+    align-items: end;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .filter-picker,
+  .filter-name {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .filter-picker label,
+  .filter-name label,
+  .expression-heading label {
+    font-weight: 600;
+  }
   .filter-actions {
     display: flex;
     justify-content: flex-end;
     gap: 6px;
     flex-wrap: wrap;
   }
-  .filter-actions select {
-    min-width: 190px;
+  .temporary-actions {
+    grid-column: 2 / 4;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    color: #57606a;
   }
-  .filter-actions input {
-    min-width: 170px;
+  .expression-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
   }
-  .editor .section-heading {
-    align-items: flex-start;
-    gap: 20px;
+  .expression-heading span {
+    color: #57606a;
+    font-size: 12px;
+    text-align: right;
   }
   .editor textarea {
     width: 100%;
     display: block;
-    margin-top: 8px;
+    margin-top: 6px;
     resize: vertical;
     font:
       13px/1.6 ui-monospace,
@@ -833,13 +955,21 @@
       align-items: stretch;
       flex-direction: column;
     }
-    .filter-actions {
-      justify-content: flex-start;
-      margin-top: 10px;
+    .filter-management {
+      grid-template-columns: minmax(0, 1fr);
     }
-    .filter-actions select,
-    .filter-actions input {
-      flex: 1 1 100%;
+    .filter-actions,
+    .temporary-actions {
+      grid-column: 1;
+      justify-content: flex-start;
+    }
+    .temporary-actions,
+    .expression-heading {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .expression-heading span {
+      text-align: left;
     }
     .card {
       padding: 14px;

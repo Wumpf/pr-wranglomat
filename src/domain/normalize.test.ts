@@ -14,6 +14,7 @@ it('normalizes merged state and filterable fields', () => {
       assignees: [],
       requested_reviewers: [],
       requested_teams: [],
+      reviewed_by: [{ login: 'reviewer' }],
       base: { ref: 'main' },
       head: { ref: 'feature' },
       milestone: null,
@@ -29,4 +30,5 @@ it('normalizes merged state and filterable fields', () => {
   expect(pr.state).toBe('merged');
   expect(pr.review_state).toBe('approved');
   expect(pr.labels).toEqual(['bug']);
+  expect(pr.reviewed_by).toEqual(['reviewer']);
 });

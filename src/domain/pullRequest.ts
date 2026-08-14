@@ -18,6 +18,7 @@ export interface PullRequest {
   assignees: string[];
   requested_reviewers: string[];
   requested_teams: string[];
+  reviewed_by: string[];
   base: string;
   head: string;
   milestone: string | null;

@@ -4,6 +4,7 @@ const collectionFields = new Set([
   'assignees',
   'requested_reviewers',
   'requested_teams',
+  'reviewed_by',
 ]);
 const booleanFields = new Set(['draft']);
 const numericFields = new Set(['number']);

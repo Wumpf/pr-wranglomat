@@ -11,8 +11,10 @@ export interface GitHubPullRequest {
   assignees?: Array<{ login: string }>;
   requested_reviewers?: Array<{ login: string }>;
   requested_teams?: Array<{ name: string }>;
+  reviewed_by?: Array<{ login: string }>;
   requested_reviewers_complete?: boolean;
   requested_teams_complete?: boolean;
+  reviewed_by_complete?: boolean;
   labels_complete?: boolean;
   assignees_complete?: boolean;
   base: { ref: string };
@@ -46,6 +48,7 @@ export function normalizePullRequest(
     assignees: (raw.assignees ?? []).map((x) => x.login),
     requested_reviewers: (raw.requested_reviewers ?? []).map((x) => x.login),
     requested_teams: (raw.requested_teams ?? []).map((x) => x.name),
+    reviewed_by: (raw.reviewed_by ?? []).map((x) => x.login),
     base: raw.base.ref,
     head: raw.head.ref,
     milestone: raw.milestone?.title ?? null,
@@ -71,6 +74,8 @@ export function normalizePullRequest(
       requested_teams:
         raw.requested_teams !== undefined &&
         (raw.requested_teams_complete ?? true),
+      reviewed_by:
+        raw.reviewed_by !== undefined && (raw.reviewed_by_complete ?? true),
       base: true,
       head: true,
       milestone: raw.milestone !== undefined,

@@ -42,6 +42,10 @@ const graphPullRequest = (
     nodes: [{ requestedReviewer: { login: 'bob' } }],
     pageInfo: { hasNextPage: false },
   },
+  reviews: {
+    nodes: [{ author: { login: 'carol' } }],
+    pageInfo: { hasNextPage: false },
+  },
   baseRefName: 'main',
   headRefName: `branch-${number}`,
   milestone: null,
@@ -68,6 +72,7 @@ async function mockGitHub(page: Page) {
     expect(request.headers().authorization).toBe('Bearer test-token');
     if (url.pathname === '/graphql') {
       expect(request.postData()).toContain('reviewDecision');
+      expect(request.postData()).toContain('reviews(first:100');
       await route.fulfill({
         headers: cors,
         json: {
@@ -174,7 +179,10 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
     page.getByRole('cell', { name: 'Draft', exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole('columnheader', { name: 'Reviewers' }),
+    page.getByRole('columnheader', { name: 'Requested' }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('columnheader', { name: 'Reviewed by' }),
   ).toBeVisible();
   await expect(page.getByRole('cell', { name: '@bob' }).first()).toBeVisible();
   await expect(page.getByRole('button', { name: 'Export' })).toHaveCount(0);
@@ -192,7 +200,14 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
   await expect(
     page.getByRole('cell', { name: 'Approved', exact: true }),
   ).toBeVisible();
+  await expect(
+    page.getByRole('cell', { name: '@carol' }).first(),
+  ).toBeVisible();
   const quickFilter = page.getByLabel('Filter expression');
+  await expect(
+    page.getByText('Temporary filter', { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText('Not saved', { exact: true })).toBeVisible();
   await quickFilter.fill('review_state = "approved"');
   await expect(
     page.getByRole('link', { name: /#2 Add feature/ }),
@@ -217,7 +232,10 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
   await expect(page.getByLabel('Transport')).toHaveValue('graphql');
   await expect(historyWarning).toBeVisible();
 
-  await page.getByRole('button', { name: 'New', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'New saved filter', exact: true })
+    .click();
+  await expect(page.getByText('Editing saved filter')).toBeVisible();
   await expect(page.getByLabel('Filter name')).toHaveValue('New filter');
   await page.getByRole('button', { name: 'Keep on top' }).click();
   await expect(
@@ -227,6 +245,16 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
   await editor.fill('state = "open"');
   await expect(page.getByText(/^Saving\./)).toBeVisible();
   await expect(page.getByText(/^Saved\./)).toBeVisible({ timeout: 2_000 });
+
+  await editor.fill('draft = false');
+  await page.getByLabel('Saved filter').selectOption('');
+  await expect(
+    page.getByText('Temporary filter', { exact: true }),
+  ).toBeVisible();
+  await expect(editor).toHaveValue('');
+  await page.getByLabel('Saved filter').selectOption({ label: 'New filter' });
+  await expect(editor).toHaveValue('draft = false');
+
   await editor.fill('state =');
   const expressionAlert = page.getByRole('alert');
   await expect(expressionAlert).toContainText(

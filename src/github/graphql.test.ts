@@ -25,6 +25,10 @@ const node = (number: number) => ({
     ],
     pageInfo: { hasNextPage: false },
   },
+  reviews: {
+    nodes: [{ author: { login: 'carol' } }, { author: { login: 'carol' } }],
+    pageInfo: { hasNextPage: false },
+  },
   baseRefName: 'main',
   headRefName: 'feature',
   createdAt: '2024-01-01T00:00:00Z',
@@ -77,6 +81,7 @@ it('paginates typed GraphQL nodes', async () => {
   expect(result.pullRequests.map((row) => row.number)).toEqual([1, 2]);
   expect(result.pullRequests[0].requested_reviewers).toEqual(['bob']);
   expect(result.pullRequests[0].requested_teams).toEqual(['platform']);
+  expect(result.pullRequests[0].reviewed_by).toEqual(['carol']);
   expect(result.pullRequests[0].review_state).toBe('review_required');
 });
 it('keeps every open PR while cutting old closed history', async () => {
@@ -145,6 +150,10 @@ it('marks nested connections incomplete when GitHub truncates them', async () =>
   const truncated = {
     ...node(3),
     labels: { nodes: [{ name: 'bug' }], pageInfo: { hasNextPage: true } },
+    reviews: {
+      nodes: [{ author: { login: 'carol' } }],
+      pageInfo: { hasNextPage: true },
+    },
   };
   const fetcher = vi.fn().mockResolvedValue(
     new Response(
@@ -170,7 +179,9 @@ it('marks nested connections incomplete when GitHub truncates them', async () =>
     new AbortController().signal,
   );
   expect(result.snapshot.completeness.labels).toBe(false);
+  expect(result.snapshot.completeness.reviewed_by).toBe(false);
   expect(result.pullRequests[0].fieldCompleteness.labels).toBe(false);
+  expect(result.pullRequests[0].fieldCompleteness.reviewed_by).toBe(false);
 });
 
 it('classifies and retries GraphQL rate limits', async () => {

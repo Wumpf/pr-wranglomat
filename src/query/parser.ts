@@ -21,6 +21,7 @@ const fields = new Set([
   'assignees',
   'requested_reviewers',
   'requested_teams',
+  'reviewed_by',
   'base',
   'head',
   'milestone',

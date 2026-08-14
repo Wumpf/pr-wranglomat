@@ -31,7 +31,7 @@ interface GraphQLResponse {
 const query = `query PullRequests($owner:String!, $name:String!, $states:[PullRequestState!], $cursor:String) {
   repository(owner:$owner, name:$name) {
     pullRequests(first:100, after:$cursor, states:$states, orderBy:{field:UPDATED_AT,direction:DESC}) {
-      nodes { number url title state reviewDecision isDraft author { login } labels(first:100) { nodes { name } pageInfo { hasNextPage } } assignees(first:100) { nodes { login } pageInfo { hasNextPage } } reviewRequests(first:100) { nodes { requestedReviewer { ... on User { login } ... on Team { name } } } pageInfo { hasNextPage } } baseRefName headRefName createdAt updatedAt closedAt mergedAt milestone { title } }
+      nodes { number url title state reviewDecision isDraft author { login } labels(first:100) { nodes { name } pageInfo { hasNextPage } } assignees(first:100) { nodes { login } pageInfo { hasNextPage } } reviewRequests(first:100) { nodes { requestedReviewer { ... on User { login } ... on Team { name } } } pageInfo { hasNextPage } } reviews(first:100, states:[APPROVED,CHANGES_REQUESTED,COMMENTED,DISMISSED]) { nodes { author { login } } pageInfo { hasNextPage } } baseRefName headRefName createdAt updatedAt closedAt mergedAt milestone { title } }
       pageInfo { hasNextPage endCursor }
     }
   }
@@ -136,6 +136,7 @@ export class GraphQLSource implements PullRequestSource {
       assignees: true,
       requested_reviewers: true,
       requested_teams: true,
+      reviewed_by: true,
     };
     const snapshotId = options.snapshotId ?? crypto.randomUUID();
     const cutoff =
@@ -259,7 +260,8 @@ export class GraphQLSource implements PullRequestSource {
         : undefined;
     const labels = connection('labels');
     const assignees = connection('assignees');
-    const reviews = connection('reviewRequests');
+    const reviewRequests = connection('reviewRequests');
+    const reviews = connection('reviews');
     if (
       typeof item.number !== 'number' ||
       typeof item.url !== 'string' ||
@@ -273,13 +275,14 @@ export class GraphQLSource implements PullRequestSource {
       typeof item.updatedAt !== 'string' ||
       !labels?.nodes ||
       !assignees?.nodes ||
+      !reviewRequests?.nodes ||
       !reviews?.nodes
     )
       throw new AppError(
         'invalid-response',
         'GraphQL returned malformed pull request data.',
       );
-    const reviewers = reviews.nodes.reduce<{
+    const requestedReviewers = reviewRequests.nodes.reduce<{
       users: string[];
       teams: string[];
     }>(
@@ -295,6 +298,17 @@ export class GraphQLSource implements PullRequestSource {
       },
       { users: [], teams: [] },
     );
+    const reviewedBy = [
+      ...new Set(
+        reviews.nodes.flatMap((value) => {
+          const login =
+            value && typeof value === 'object'
+              ? (value as { author?: { login?: unknown } }).author?.login
+              : undefined;
+          return login ? [String(login)] : [];
+        }),
+      ),
+    ];
     const complete = (value: { pageInfo?: { hasNextPage?: boolean } }) =>
       !value.pageInfo?.hasNextPage;
     const reviewState =
@@ -320,10 +334,14 @@ export class GraphQLSource implements PullRequestSource {
         assignees: assignees.nodes.map((value) => ({
           login: String((value as { login?: unknown }).login ?? ''),
         })),
-        requested_reviewers: reviewers.users.map((login) => ({ login })),
-        requested_teams: reviewers.teams.map((name) => ({ name })),
-        requested_reviewers_complete: complete(reviews),
-        requested_teams_complete: complete(reviews),
+        requested_reviewers: requestedReviewers.users.map((login) => ({
+          login,
+        })),
+        requested_teams: requestedReviewers.teams.map((name) => ({ name })),
+        reviewed_by: reviewedBy.map((login) => ({ login })),
+        requested_reviewers_complete: complete(reviewRequests),
+        requested_teams_complete: complete(reviewRequests),
+        reviewed_by_complete: complete(reviews),
         labels_complete: complete(labels),
         assignees_complete: complete(assignees),
         base: { ref: String(item.baseRefName ?? '') },

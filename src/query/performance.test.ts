@@ -21,6 +21,7 @@ it('evaluates 10,000 records without dynamic code', () => {
         assignees: [],
         requested_reviewers: [],
         requested_teams: [],
+        reviewed_by: [],
         base: 'main',
         head: 'head',
         milestone: null,
