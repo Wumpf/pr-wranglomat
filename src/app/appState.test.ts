@@ -35,6 +35,25 @@ it('creates a saved filter and saves every edit immediately', async () => {
   expect(app.source).toBe('state = "open"');
 });
 
+it('keeps a typed trailing space while saving a filter name', async () => {
+  const app = createAppState();
+  await app.init();
+  const savedId = app.activeFilter!.id;
+
+  app.renameFilter('Open ');
+
+  await vi.waitFor(async () => {
+    expect((await filters.get(savedId))?.name).toBe('Open');
+  });
+  expect(app.filterName).toBe('Open ');
+
+  app.renameFilter('Open pull requests');
+  await vi.waitFor(async () => {
+    expect((await filters.get(savedId))?.name).toBe('Open pull requests');
+  });
+  expect(app.filterName).toBe('Open pull requests');
+});
+
 it('waits for an in-flight draft save before duplicating a filter', async () => {
   const app = createAppState();
   await app.init();

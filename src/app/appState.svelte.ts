@@ -579,7 +579,6 @@ export function createAppState() {
           if (!next || nameRevisions.get(filterId) !== revision) return true;
           if (activeFilter?.id === filterId) {
             activeFilter = next;
-            filterName = next.name;
           }
           savedFilters = await filters.list();
           if (activeFilter?.id === filterId) saveState = 'Saved';
