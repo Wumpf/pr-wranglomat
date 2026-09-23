@@ -105,9 +105,21 @@ export const repositories = {
           building.state !== 'building'
         )
           return;
-        await db.pullRequests.bulkPut(
-          rows.map((row) => ({ ...row, repositoryId: repo.id, snapshotId })),
-        );
+        // Pages are already durable. Validate membership before switching the
+        // active pointer rather than serializing and writing every PR again.
+        const keys = await db.pullRequests
+          .where('[repositoryId+snapshotId]')
+          .equals([repo.id, snapshotId])
+          .primaryKeys();
+        const expected = new Set(rows.map((row) => row.number));
+        if (
+          expected.size !== rows.length ||
+          keys.length !== expected.size ||
+          keys.some((key) => !expected.has(key[2]))
+        )
+          throw new Error(
+            'Staged snapshot does not match downloaded pull requests.',
+          );
         await db.snapshots.put({
           ...(building ?? {}),
           ...metadata,

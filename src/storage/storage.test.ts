@@ -1,4 +1,5 @@
-import { beforeEach, expect, it } from 'vitest';
+import { beforeEach, expect, it, vi } from 'vitest';
+import { normalizePullRequest } from '../domain/normalize';
 import Dexie from 'dexie';
 import { db } from './db';
 import { filters } from './filters';
@@ -20,14 +21,12 @@ it('upgrades existing databases without retaining obsolete stores or losing filt
     obsoleteCache: 'key',
   });
   await previous.open();
-  await previous
-    .table('filters')
-    .put({
-      id: 'saved',
-      name: 'Saved filter',
-      nameKey: 'saved filter',
-      updatedAt: '2026-01-01T00:00:00Z',
-    });
+  await previous.table('filters').put({
+    id: 'saved',
+    name: 'Saved filter',
+    nameKey: 'saved filter',
+    updatedAt: '2026-01-01T00:00:00Z',
+  });
   await previous.table('obsoleteCache').put({ key: 'cached' });
   previous.close();
   await db.open();
@@ -81,6 +80,50 @@ it('stages a building generation and deletes the old generation after activation
   await repositories.activate(previous!, 'new', []);
   expect((await repositories.get(repo.id))?.activeSnapshotId).toBe('new');
   expect(await db.snapshots.get('old')).toBeUndefined();
+});
+
+it('activates staged rows without rewriting them and rejects missing rows', async () => {
+  const repo = {
+    id: 7,
+    fullName: 'acme/app',
+    visibility: 'private' as const,
+    defaultBranch: 'main',
+    lastSyncStatus: 'never' as const,
+  };
+  const row = normalizePullRequest(
+    {
+      number: 1,
+      title: 'One',
+      state: 'open',
+      base: { ref: 'main' },
+      head: { ref: 'feature' },
+      closed_at: null,
+      html_url: 'https://github.com/acme/app/pull/1',
+      created_at: '2026-01-01',
+      updated_at: '2026-01-01',
+    },
+    repo.id,
+    repo.fullName,
+    'new',
+  );
+  await repositories.save(repo);
+  await repositories.beginSnapshot(repo, 'old');
+  await repositories.activate(repo, 'old', []);
+  const current = (await repositories.get(repo.id))!;
+  await repositories.beginSnapshot(current, 'new');
+  await expect(repositories.activate(current, 'new', [row])).rejects.toThrow(
+    'Staged snapshot',
+  );
+  expect((await repositories.get(repo.id))?.activeSnapshotId).toBe('old');
+  await repositories.stageRows(repo.id, 'new', [row]);
+  const writes = vi.spyOn(db.pullRequests, 'bulkPut');
+  try {
+    expect(await repositories.activate(current, 'new', [row])).toBe(true);
+    expect(writes).not.toHaveBeenCalled();
+    expect(await repositories.activeRows(repo.id)).toEqual([row]);
+  } finally {
+    writes.mockRestore();
+  }
 });
 
 it('rejects a stale concurrent activation inside the transaction', async () => {

@@ -373,53 +373,105 @@ export function createAppState() {
         status = 'Select at least one repository and provide a token first.';
         return;
       }
+      return this.refreshTargets(targets);
+    },
+    async refreshRepository(target: Repository) {
+      if (busy || refreshingSelection || !auth.credential) return;
+      return this.refreshTargets([target], false);
+    },
+    async refreshTargets(targets: Repository[], useSelectedScope = true) {
       refreshingSelection = true;
-      const startGeneration = generation;
+      busy = true;
+      const startGeneration = ++generation;
+      const batchController = new AbortController();
+      controller = batchController;
+      const source = new GraphQLSource(undefined, undefined, auth.credential);
+      const started = performance.now();
+      let next = 0;
+      let failures = 0;
       const scope = cloneScope(snapshotScope);
       try {
         await this.saveSelectedPreferences();
         if (generation !== startGeneration) return;
-        for (const target of targets) {
-          const repo = {
-            ...target,
-            snapshotScope: scope,
-          };
-          const expectedGeneration = generation + 1;
-          await this.refreshRepository(repo);
-          if (generation !== expectedGeneration) break;
-        }
+        const worker = async () => {
+          while (generation === startGeneration && next < targets.length) {
+            const target = targets[next++];
+            const succeeded = await this.downloadRepository(
+              useSelectedScope ? { ...target, snapshotScope: scope } : target,
+              source,
+              startGeneration,
+              batchController.signal,
+            );
+            if (!succeeded) failures++;
+          }
+        };
+        // Even unexpected storage failures must not release the batch guard
+        // while another worker still owns a building snapshot.
+        const workers = await Promise.allSettled(
+          Array.from({ length: Math.min(3, targets.length) }, worker),
+        );
+        const rejected = workers.find((result) => result.status === 'rejected');
+        if (rejected?.status === 'rejected') throw rejected.reason;
+        if (generation !== startGeneration) return;
+        const reloadStarted = performance.now();
+        repos = await repositories.list();
+        await loadSelectedRows();
+        console.debug('PR refresh timings', {
+          totalMs: performance.now() - started,
+          reloadMs: performance.now() - reloadStarted,
+        });
+        if (generation === startGeneration)
+          status = failures
+            ? `Refresh finished · ${failures} repositories failed; previous snapshots retained.`
+            : `Ready · ${rows.length} pull requests (${scopeLabel(useSelectedScope ? scope : (targets[0].snapshotScope ?? { kind: 'open' }))})`;
       } finally {
         refreshingSelection = false;
+        if (generation === startGeneration) {
+          busy = false;
+          controller = undefined;
+        }
       }
     },
-    async refreshRepository(target: Repository) {
-      if (!auth.credential) {
-        status = 'Add a repository and provide a token first.';
-        return;
-      }
-      const run = ++generation;
-      busy = true;
-      controller = new AbortController();
-      status = 'Refreshing…';
+    async downloadRepository(
+      target: Repository,
+      source: GraphQLSource,
+      run: number,
+      signal: AbortSignal,
+    ) {
+      const started = performance.now();
+      let storageMs = 0;
+      let downloadMs = 0;
+      let activationMs = 0;
       const repoAtStart = target;
       const scope = cloneScope(target.snapshotScope ?? { kind: 'open' });
       const snapshotId = crypto.randomUUID();
       try {
         await repositories.beginSnapshot(repoAtStart, snapshotId, scope);
-        const source = new GraphQLSource(undefined, undefined, auth.credential);
+        if (signal.aborted)
+          throw new AppError('cancelled', 'Refresh cancelled.');
+        const downloadStarted = performance.now();
         const synced = await source.createSnapshot(
           repoAtStart,
           {
             snapshotId,
             scope,
-            onPage: (pageRows) =>
-              repositories.stageRows(repoAtStart.id, snapshotId, pageRows),
+            onPage: async (pageRows) => {
+              const started = performance.now();
+              await repositories.stageRows(
+                repoAtStart.id,
+                snapshotId,
+                pageRows,
+              );
+              storageMs += performance.now() - started;
+            },
           },
           (progress) => {
-            status = `${progress.status} (${progress.count} pull requests${progress.rateLimitRemaining === undefined ? '' : ` · ${progress.rateLimitRemaining} requests remaining`})`;
+            if (run === generation)
+              status = `${target.fullName}: ${progress.status} (${progress.count} pull requests${progress.rateLimitRemaining === undefined ? '' : ` · ${progress.rateLimitRemaining} points remaining`})`;
           },
-          controller!.signal,
+          signal,
         );
+        downloadMs = performance.now() - downloadStarted;
         if (run !== generation) {
           await repositories.discardSnapshot(
             repoAtStart,
@@ -430,6 +482,7 @@ export function createAppState() {
         }
         const latest = await repositories.get(repoAtStart.id);
         if (
+          run !== generation ||
           !latest ||
           latest.activeSnapshotId !== repoAtStart.activeSnapshotId
         ) {
@@ -440,12 +493,14 @@ export function createAppState() {
           );
           return;
         }
+        const activationStarted = performance.now();
         const activated = await repositories.activate(
           repoAtStart,
           synced.snapshot.id,
           synced.pullRequests,
           synced.snapshot,
         );
+        activationMs = performance.now() - activationStarted;
         if (!activated) {
           await repositories.discardSnapshot(
             repoAtStart,
@@ -454,9 +509,7 @@ export function createAppState() {
           );
           return;
         }
-        repos = await repositories.list();
-        await loadSelectedRows();
-        status = `Ready · ${rows.length} pull requests (${scopeLabel(scope)})`;
+        return true;
       } catch (error) {
         const syncStatus =
           error instanceof AppError && error.code === 'cancelled'
@@ -475,11 +528,14 @@ export function createAppState() {
         if (run === generation)
           status = error instanceof Error ? error.message : 'Refresh failed.';
       } finally {
-        if (run === generation) {
-          busy = false;
-          controller = undefined;
-        }
+        console.debug(`PR refresh timings: ${target.fullName}`, {
+          totalMs: performance.now() - started,
+          downloadMs,
+          storageMs,
+          activationMs,
+        });
       }
+      return false;
     },
     cancel() {
       generation++;

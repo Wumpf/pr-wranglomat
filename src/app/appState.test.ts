@@ -135,6 +135,84 @@ it('refreshes all selected repositories through GraphQL', async () => {
   app.forgetToken();
 });
 
+it.each(['success', 'cancel', 'failure'])(
+  'bounds repository concurrency and drains workers (%s)',
+  async (mode) => {
+    const cancel = mode === 'cancel';
+    for (const id of [1, 2, 3, 4, 5]) {
+      const repo: Repository = {
+        id,
+        fullName: `owner/repo${id}`,
+        visibility: 'public',
+        defaultBranch: 'main',
+        lastSyncStatus: 'never',
+      };
+      await repositories.save(repo);
+      await repositories.beginSnapshot(repo, `old-${id}`);
+      await repositories.activate(repo, `old-${id}`, []);
+    }
+    const app = createAppState();
+    await app.init();
+    app.setToken('test-token');
+    let active = 0;
+    let peak = 0;
+    const release: Array<() => void> = [];
+    const signals: AbortSignal[] = [];
+    const sync = vi
+      .spyOn(GraphQLSource.prototype, 'createSnapshot')
+      .mockImplementation(async (repo, options, _progress, signal) => {
+        signals.push(signal);
+        active++;
+        peak = Math.max(peak, active);
+        await new Promise<void>((resolve) => release.push(resolve));
+        active--;
+        if (mode === 'failure' && repo.id === 1)
+          throw new Error('Download failed');
+        return {
+          snapshot: {
+            id: options.snapshotId!,
+            repositoryId: repo.id,
+            state: 'complete',
+            schemaVersion: 1,
+            profile: 'core',
+            source: 'github-graphql',
+            completeness: { core: true },
+            count: 0,
+            startedAt: new Date().toISOString(),
+            scope: options.scope!,
+            historyComplete: false,
+          },
+          pullRequests: [],
+        };
+      });
+    const refresh = app.refresh();
+    await vi.waitFor(() => expect(sync).toHaveBeenCalledTimes(3));
+    expect(app.busy).toBe(true);
+    if (cancel) {
+      app.cancel();
+      expect(signals.every((signal) => signal.aborted)).toBe(true);
+    }
+    release.splice(0).forEach((resolve) => resolve());
+    if (!cancel) {
+      await vi.waitFor(() => expect(sync).toHaveBeenCalledTimes(5));
+      release.splice(0).forEach((resolve) => resolve());
+    }
+    await refresh;
+    expect(peak).toBe(3);
+    expect(app.busy).toBe(false);
+    expect(await db.snapshots.where('state').equals('building').count()).toBe(
+      0,
+    );
+    for (const id of [1, 2, 3, 4, 5]) {
+      const repo = (await repositories.get(id))!;
+      if (cancel || (mode === 'failure' && id === 1))
+        expect(repo.activeSnapshotId).toBe(`old-${id}`);
+      else expect(repo.activeSnapshotId).not.toBe(`old-${id}`);
+    }
+    app.forgetToken();
+  },
+);
+
 it('requires credentials before refreshing a multi-repository selection', async () => {
   const repos: Repository[] = [1, 2, 3].map((id) => ({
     id,

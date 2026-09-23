@@ -106,6 +106,95 @@ it('resolves repository URLs through GraphQL', async () => {
   });
 });
 
+it.each([false, true])(
+  'overlaps page storage with fetching and drains writes (failure=%s)',
+  async (fail) => {
+    const fetcher = vi.fn().mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: {
+              repository: {
+                pullRequests: {
+                  nodes: [node(fetcher.mock.calls.length)],
+                  pageInfo: {
+                    hasNextPage: fetcher.mock.calls.length === 1,
+                    endCursor: 'cursor',
+                  },
+                },
+              },
+            },
+          }),
+        ),
+    );
+    let release!: () => void;
+    const write = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const onPage = vi.fn().mockImplementationOnce(async () => {
+      await write;
+      if (fail) throw new Error('Storage failed');
+    });
+    let finished = false;
+    const snapshot = new GraphQLSource(undefined, fetcher).createSnapshot(
+      repository,
+      { onPage },
+      () => {},
+      new AbortController().signal,
+    );
+    const result = snapshot.then(
+      (value) => {
+        finished = true;
+        return value;
+      },
+      (error: unknown) => {
+        finished = true;
+        return error;
+      },
+    );
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    expect(onPage).toHaveBeenCalledTimes(1);
+    expect(finished).toBe(false);
+    release();
+    if (fail) expect(await result).toEqual(new Error('Storage failed'));
+    else expect(await result).toMatchObject({ snapshot: { count: 2 } });
+    expect(onPage).toHaveBeenCalledTimes(fail ? 1 : 2);
+  },
+);
+
+it('shares rate-limit cooldown across repository requests', async () => {
+  vi.useFakeTimers();
+  try {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response('', { status: 429, headers: { 'retry-after': '2' } }),
+      )
+      .mockImplementation(
+        async () =>
+          new Response(
+            JSON.stringify({
+              data: {
+                viewer: { login: 'alice' },
+                rateLimit: { remaining: 100, resetAt: '2030-01-01T00:00:00Z' },
+              },
+            }),
+          ),
+      );
+    const source = new GraphQLSource(undefined, fetcher);
+    const first = source.validateCredential();
+    await vi.advanceTimersByTimeAsync(0);
+    const second = source.validateCredential();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1200);
+    await Promise.all([first, second]);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it('paginates typed GraphQL nodes', async () => {
   const fetcher = vi
     .fn()

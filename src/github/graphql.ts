@@ -41,6 +41,24 @@ const query = `query PullRequests($owner:String!, $name:String!, $states:[PullRe
 const repoQuery = `query Repo($owner:String!, $name:String!) { repository(owner:$owner,name:$name) { databaseId nameWithOwner defaultBranchRef { name } visibility } }`;
 
 export class GraphQLSource implements PullRequestSource {
+  // Shared by all repository workers in a refresh batch.
+  private blockedUntil = 0;
+  private async waitForBudget(signal?: AbortSignal) {
+    while (this.blockedUntil > Date.now())
+      await delay(this.blockedUntil - Date.now(), signal);
+  }
+  private async pause(
+    response: Response,
+    resetAt: string | undefined,
+    signal: AbortSignal | undefined,
+    attempt: number,
+  ) {
+    this.blockedUntil = Math.max(
+      this.blockedUntil,
+      Date.now() + retryDelay(response, resetAt, attempt),
+    );
+    await this.waitForBudget(signal);
+  }
   constructor(
     private readonly origin = 'https://api.github.com/graphql',
     private readonly fetcher: typeof fetch = globalThis.fetch.bind(globalThis),
@@ -157,73 +175,98 @@ export class GraphQLSource implements PullRequestSource {
     const cutoff =
       scope.kind === 'recent' ? Date.now() - scope.cutoffDays * 86400000 : 0;
 
-    for (const stream of streams) {
-      let cursor: string | null = null;
-      let hasNext = true;
-      while (hasNext) {
-        const response: GraphQLResponse = await this.request<GraphQLResponse>(
-          query,
-          { owner, name, states: stream.states, cursor },
-          this.credential,
-          signal,
-        );
-        const pageData: GraphQLPage['repository']['pullRequests'] | undefined =
-          response.data?.repository?.pullRequests;
-        if (!pageData || !Array.isArray(pageData.nodes) || !pageData.pageInfo)
-          throw new AppError(
-            'invalid-response',
-            'GitHub returned malformed GraphQL data.',
+    // At most one page write overlaps the next request. Always drain before
+    // returning/throwing so cancellation cannot race snapshot cleanup.
+    let pendingWrite: Promise<{ error: unknown } | undefined> | undefined;
+    const drainWrite = async () => {
+      const result = await pendingWrite;
+      pendingWrite = undefined;
+      if (result) throw result.error;
+    };
+    try {
+      for (const stream of streams) {
+        let cursor: string | null = null;
+        let hasNext = true;
+        while (hasNext) {
+          const response: GraphQLResponse = await this.request<GraphQLResponse>(
+            query,
+            { owner, name, states: stream.states, cursor },
+            this.credential,
+            signal,
           );
-        const normalized: ReturnType<typeof normalizePullRequest>[] =
-          pageData.nodes.map((node: unknown) =>
-            this.normalizeNode(node, repository, snapshotId),
+          const pageData:
+            GraphQLPage['repository']['pullRequests'] | undefined =
+            response.data?.repository?.pullRequests;
+          if (!pageData || !Array.isArray(pageData.nodes) || !pageData.pageInfo)
+            throw new AppError(
+              'invalid-response',
+              'GitHub returned malformed GraphQL data.',
+            );
+          const normalized: ReturnType<typeof normalizePullRequest>[] =
+            pageData.nodes.map((node: unknown) =>
+              this.normalizeNode(node, repository, snapshotId),
+            );
+          const staged = normalized.filter(
+            (row) =>
+              !stream.stopAtCutoff ||
+              new Date(row.updated_at).valueOf() >= cutoff,
           );
-        const staged = normalized.filter(
-          (row) =>
-            !stream.stopAtCutoff ||
-            new Date(row.updated_at).valueOf() >= cutoff,
-        );
-        for (const row of staged) {
-          if (!seen.has(row.number)) {
-            seen.add(row.number);
-            rows.push(row);
+          const accepted: typeof staged = [];
+          for (const row of staged) {
+            if (!seen.has(row.number)) {
+              seen.add(row.number);
+              rows.push(row);
+              accepted.push(row);
+            }
+            for (const field of Object.keys(fieldCompleteness) as Array<
+              keyof typeof fieldCompleteness
+            >)
+              fieldCompleteness[field] &&= Boolean(
+                row.fieldCompleteness[field],
+              );
           }
-          for (const field of Object.keys(fieldCompleteness) as Array<
-            keyof typeof fieldCompleteness
-          >)
-            fieldCompleteness[field] &&= Boolean(row.fieldCompleteness[field]);
+          pages++;
+          requests++;
+          hasNext = pageData.pageInfo.hasNextPage;
+          cursor = pageData.pageInfo.endCursor;
+          const rate = response.data?.rateLimit;
+          remaining = rate?.remaining ?? remaining;
+          resetAt = rate?.resetAt ?? resetAt;
+          cost += rate?.cost ?? response.extensions?.cost?.actualQueryCost ?? 0;
+          const progress = {
+            pages,
+            requests,
+            count: rows.length,
+            rateLimitRemaining: remaining,
+            rateLimitResetAt: resetAt,
+            rateLimitCost: cost,
+            status: `Downloaded GraphQL page ${pages}`,
+          };
+          onProgress(progress);
+          await drainWrite();
+          pendingWrite = Promise.resolve()
+            .then(() => options.onPage?.(accepted, progress))
+            .then(
+              () => undefined,
+              (error: unknown) => ({ error }),
+            );
+          if (
+            stream.stopAtCutoff &&
+            normalized.length > 0 &&
+            normalized.every(
+              (row) => new Date(row.updated_at).valueOf() < cutoff,
+            )
+          )
+            break;
+          if (!cursor && hasNext)
+            throw new AppError(
+              'invalid-response',
+              'GraphQL pagination returned no cursor.',
+            );
         }
-        pages++;
-        requests++;
-        hasNext = pageData.pageInfo.hasNextPage;
-        cursor = pageData.pageInfo.endCursor;
-        const rate = response.data?.rateLimit;
-        remaining = rate?.remaining ?? remaining;
-        resetAt = rate?.resetAt ?? resetAt;
-        cost += rate?.cost ?? response.extensions?.cost?.actualQueryCost ?? 0;
-        const progress = {
-          pages,
-          requests,
-          count: rows.length,
-          rateLimitRemaining: remaining,
-          rateLimitResetAt: resetAt,
-          rateLimitCost: cost,
-          status: `Downloaded GraphQL page ${pages}`,
-        };
-        onProgress(progress);
-        await options.onPage?.(staged, progress);
-        if (
-          stream.stopAtCutoff &&
-          normalized.length > 0 &&
-          normalized.every((row) => new Date(row.updated_at).valueOf() < cutoff)
-        )
-          break;
-        if (!cursor && hasNext)
-          throw new AppError(
-            'invalid-response',
-            'GraphQL pagination returned no cursor.',
-          );
       }
+    } finally {
+      await drainWrite();
     }
     rows.sort(
       (a, b) => b.updated_at.localeCompare(a.updated_at) || a.number - b.number,
@@ -403,6 +446,9 @@ export class GraphQLSource implements PullRequestSource {
   ): Promise<T> {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
+        await this.waitForBudget(signal);
+        if (signal?.aborted)
+          throw new AppError('cancelled', 'Refresh cancelled.');
         const response = await this.fetcher(this.origin, {
           method: 'POST',
           headers: {
@@ -425,7 +471,7 @@ export class GraphQLSource implements PullRequestSource {
             (response.status === 403 || response.status === 429) &&
             attempt < 2
           ) {
-            await waitForRetry(response, resetAt, signal, attempt);
+            await this.pause(response, resetAt, signal, attempt);
             continue;
           }
           throw new AppError(
@@ -446,7 +492,7 @@ export class GraphQLSource implements PullRequestSource {
             /rate|limit|throttl/i.test(error.message ?? ''),
         );
         if (rateError && attempt < 2) {
-          await waitForRetry(response, resetAt, signal, attempt);
+          await this.pause(response, resetAt, signal, attempt);
           continue;
         }
         if (body.errors?.length)
@@ -455,6 +501,12 @@ export class GraphQLSource implements PullRequestSource {
             rateError
               ? 'GitHub GraphQL rate limit exceeded.'
               : 'GitHub GraphQL request failed.',
+          );
+        const rate = (body.data as GraphQLPage | undefined)?.rateLimit;
+        if (rate?.remaining === 0 && Number.isFinite(Date.parse(rate.resetAt)))
+          this.blockedUntil = Math.max(
+            this.blockedUntil,
+            Date.parse(rate.resetAt),
           );
         return body;
       } catch (error) {
@@ -477,37 +529,37 @@ export class GraphQLSource implements PullRequestSource {
     throw new AppError('network', 'Unable to reach GitHub.');
   }
 }
-async function waitForRetry(
+function retryDelay(
   response: Response,
   resetAt: string | undefined,
-  signal: AbortSignal | undefined,
   attempt: number,
 ) {
   const retry = Number(response.headers.get('retry-after') ?? '');
   const resetWait = resetAt
     ? Math.max(0, (new Date(resetAt).valueOf() - Date.now()) / 1000)
     : 0;
-  await delay(
-    Math.min(
-      300_000,
-      (Number.isFinite(retry) && retry > 0
-        ? retry * 1000
-        : resetWait * 1000 || 250 * 2 ** attempt) +
-        Math.floor(Math.random() * 100),
-    ),
-    signal,
+  return Math.min(
+    300_000,
+    (Number.isFinite(retry) && retry > 0
+      ? retry * 1000
+      : resetWait * 1000 || 250 * 2 ** attempt) +
+      Math.floor(Math.random() * 100),
   );
 }
 function delay(ms: number, signal?: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer);
-        reject(new AppError('cancelled', 'Refresh cancelled.'));
-      },
-      { once: true },
-    );
+    if (signal?.aborted) {
+      reject(new AppError('cancelled', 'Refresh cancelled.'));
+      return;
+    }
+    const abort = () => {
+      clearTimeout(timer);
+      reject(new AppError('cancelled', 'Refresh cancelled.'));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', abort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', abort, { once: true });
   });
 }
