@@ -1,5 +1,5 @@
 import type { Credential } from '../ingestion/source';
-import { GitHubClient } from './client';
+import { GraphQLSource } from './graphql';
 let current: Credential | undefined;
 let identity:
   | { login: string; rateLimitRemaining?: number; rateLimitResetAt?: string }
@@ -13,22 +13,11 @@ export const auth = {
   },
   async validate(signal?: AbortSignal) {
     if (!current) throw new Error('Paste a GitHub token first.');
-    const client = new GitHubClient();
-    const user = await client.request<{ login: string }>(
-      '/user',
+    identity = await new GraphQLSource(
+      undefined,
+      undefined,
       current,
-      signal,
-    );
-    const limit = await client.request<{
-      rate: { remaining: number; reset: number };
-    }>('/rate_limit', current, signal);
-    if (!user.data || typeof user.data.login !== 'string' || !limit.data?.rate)
-      throw new Error('GitHub returned an invalid authentication response.');
-    identity = {
-      login: user.data.login,
-      rateLimitRemaining: limit.data.rate.remaining,
-      rateLimitResetAt: new Date(limit.data.rate.reset * 1000).toISOString(),
-    };
+    ).validateCredential(signal);
     return identity;
   },
   forget() {

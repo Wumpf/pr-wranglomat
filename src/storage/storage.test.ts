@@ -1,27 +1,44 @@
 import { beforeEach, expect, it } from 'vitest';
+import Dexie from 'dexie';
 import { db } from './db';
 import { filters } from './filters';
 import { repositories } from './repositories';
-import { pageCacheFor } from './pageCache';
 beforeEach(async () => {
   await db.delete();
   await db.open();
 });
-it('preserves cached pagination metadata for 304 revalidation', async () => {
-  const cache = pageCacheFor(1);
-  await cache.set({
-    key: '1|open|open|1',
-    etag: 'etag',
-    rows: [],
-    updatedAt: '2024-01-01T00:00:00Z',
-    next: 'https://api.github.com/repos/acme/app/pulls?page=2',
-    last: 'https://api.github.com/repos/acme/app/pulls?page=4',
-    totalPages: 4,
+it('upgrades existing databases without retaining obsolete stores or losing filters', async () => {
+  await db.delete();
+  const previous = new Dexie(db.name);
+  previous.version(2).stores({
+    repositories: 'id, fullName, lastSuccessfulSyncAt',
+    pullRequests:
+      '[repositoryId+snapshotId+number], [repositoryId+snapshotId], updated_at',
+    snapshots: 'id, repositoryId, state',
+    filters: 'id, &nameKey, updatedAt',
+    settings: 'key',
+    obsoleteCache: 'key',
   });
-  await expect(cache.get('1|open|open|1')).resolves.toMatchObject({
-    totalPages: 4,
-    next: 'https://api.github.com/repos/acme/app/pulls?page=2',
-  });
+  await previous.open();
+  await previous
+    .table('filters')
+    .put({
+      id: 'saved',
+      name: 'Saved filter',
+      nameKey: 'saved filter',
+      updatedAt: '2026-01-01T00:00:00Z',
+    });
+  await previous.table('obsoleteCache').put({ key: 'cached' });
+  previous.close();
+  await db.open();
+  expect((await filters.list())[0].name).toBe('Saved filter');
+  expect(Array.from(db.backendDB().objectStoreNames).sort()).toEqual([
+    'filters',
+    'pullRequests',
+    'repositories',
+    'settings',
+    'snapshots',
+  ]);
 });
 
 it('enforces unique case-folded filter names', async () => {

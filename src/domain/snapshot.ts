@@ -3,7 +3,6 @@ export type SnapshotScope =
   | { kind: 'open' }
   | { kind: 'recent'; cutoffDays: number }
   | { kind: 'complete' };
-export type IngestionTransport = 'rest' | 'graphql';
 export interface Snapshot {
   id: string;
   repositoryId: number;
@@ -21,7 +20,6 @@ export interface Snapshot {
   rateLimitCost?: number;
   failure?: { code: string; message: string };
   scope: SnapshotScope;
-  transport: IngestionTransport;
   historyComplete: boolean;
 }
 export interface SnapshotResult {
@@ -36,6 +34,4 @@ export interface SyncProgress {
   rateLimitResetAt?: string;
   rateLimitCost?: number;
   status: string;
-  cachedPages?: number;
-  totalPages?: number;
 }

@@ -41,6 +41,71 @@ const node = (number: number) => ({
   mergedAt: null,
   milestone: null,
 });
+it('validates credentials with viewer and rate-limit data in one request', async () => {
+  const credential = { kind: 'pat' as const, token: 'test-token' };
+  const fetcher = vi.fn().mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        data: {
+          viewer: { login: 'octocat' },
+          rateLimit: { remaining: 4998, resetAt: '2030-01-01T00:00:00Z' },
+        },
+      }),
+    ),
+  );
+  const source = new GraphQLSource(undefined, fetcher, credential);
+  await expect(source.validateCredential()).resolves.toEqual({
+    login: 'octocat',
+    rateLimitRemaining: 4998,
+    rateLimitResetAt: '2030-01-01T00:00:00Z',
+  });
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(fetcher).toHaveBeenCalledWith(
+    'https://api.github.com/graphql',
+    expect.objectContaining({
+      method: 'POST',
+      headers: expect.objectContaining({ Authorization: 'Bearer test-token' }),
+    }),
+  );
+});
+
+it('rejects malformed authentication responses', async () => {
+  const fetcher = vi
+    .fn()
+    .mockResolvedValue(new Response(JSON.stringify({ data: { viewer: {} } })));
+  await expect(
+    new GraphQLSource(undefined, fetcher).validateCredential(),
+  ).rejects.toMatchObject({ code: 'invalid-response' });
+});
+
+it('resolves repository URLs through GraphQL', async () => {
+  const credential = { kind: 'pat' as const, token: 'test-token' };
+  const fetcher = vi.fn().mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        data: {
+          repository: {
+            databaseId: 1,
+            nameWithOwner: 'acme/app',
+            visibility: 'PUBLIC',
+            defaultBranchRef: { name: 'main' },
+          },
+        },
+      }),
+    ),
+  );
+  await expect(
+    new GraphQLSource(undefined, fetcher).resolveRepository(
+      'https://github.com/acme/app.git',
+      credential,
+    ),
+  ).resolves.toMatchObject(repository);
+  expect(JSON.parse(fetcher.mock.calls[0][1].body).variables).toEqual({
+    owner: 'acme',
+    name: 'app',
+  });
+});
+
 it('paginates typed GraphQL nodes', async () => {
   const fetcher = vi
     .fn()

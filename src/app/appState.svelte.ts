@@ -8,13 +8,11 @@ import { settings } from '../storage/settings';
 import { parse } from '../query/parser';
 import { evaluate } from '../query/evaluate';
 import { auth } from '../github/auth';
-import { GitHubSource } from '../github/sync';
 import { GraphQLSource } from '../github/graphql';
 import { AppError } from '../domain/errors';
 import { storageChanges } from '../storage/db';
-import type { IngestionTransport, SnapshotScope } from '../domain/snapshot';
+import type { SnapshotScope } from '../domain/snapshot';
 import { formatDiagnosticLocation } from './diagnostics';
-import { pageCache } from '../storage/pageCache';
 export function createAppState() {
   let repos = $state<Repository[]>([]);
   let excludedRepositoryIds = $state<number[]>([]);
@@ -44,7 +42,6 @@ export function createAppState() {
   );
   let snapshotScope = $state<SnapshotScope>({ kind: 'open' });
   let recentCutoffDays = $state(90);
-  let transport = $state<IngestionTransport>('rest');
   let authIdentity = $state<
     | { login: string; rateLimitRemaining?: number; rateLimitResetAt?: string }
     | undefined
@@ -230,9 +227,6 @@ export function createAppState() {
     get snapshotScope() {
       return snapshotScope;
     },
-    get transport() {
-      return transport;
-    },
     get recentCutoffDays() {
       return recentCutoffDays;
     },
@@ -256,10 +250,6 @@ export function createAppState() {
       recentCutoffDays = safe;
       await this.setSnapshotScope({ kind: 'recent', cutoffDays: safe });
     },
-    async setTransport(value: IngestionTransport) {
-      transport = value;
-      await this.saveSelectedPreferences();
-    },
     async saveSelectedPreferences() {
       const targets = this.selectedRepositories;
       if (!targets.length) return;
@@ -271,7 +261,6 @@ export function createAppState() {
       preferenceRevision = revision;
       const preferences = {
         snapshotScope: cloneScope(snapshotScope),
-        ingestionTransport: transport,
         recentCutoffDays,
         preferenceRevision: revision,
       };
@@ -341,7 +330,6 @@ export function createAppState() {
       recentCutoffDays =
         first?.recentCutoffDays ??
         (snapshotScope.kind === 'recent' ? snapshotScope.cutoffDays : 90);
-      transport = first?.ingestionTransport ?? 'rest';
       await loadSelectedRows();
       await settings.set('activeFilter', activeFilter.id);
       apply();
@@ -362,7 +350,8 @@ export function createAppState() {
       busy = true;
       status = 'Resolving repository…';
       try {
-        const repo = await new GitHubSource(
+        const repo = await new GraphQLSource(
+          undefined,
           undefined,
           auth.credential,
         ).resolveRepository(input, auth.credential);
@@ -387,7 +376,6 @@ export function createAppState() {
       refreshingSelection = true;
       const startGeneration = generation;
       const scope = cloneScope(snapshotScope);
-      const selectedTransport = transport;
       try {
         await this.saveSelectedPreferences();
         if (generation !== startGeneration) return;
@@ -395,7 +383,6 @@ export function createAppState() {
           const repo = {
             ...target,
             snapshotScope: scope,
-            ingestionTransport: selectedTransport,
           };
           const expectedGeneration = generation + 1;
           await this.refreshRepository(repo);
@@ -416,30 +403,15 @@ export function createAppState() {
       status = 'Refreshing…';
       const repoAtStart = target;
       const scope = cloneScope(target.snapshotScope ?? { kind: 'open' });
-      const selectedTransport = target.ingestionTransport ?? 'rest';
       const snapshotId = crypto.randomUUID();
       try {
-        await repositories.beginSnapshot(
-          repoAtStart,
-          snapshotId,
-          scope,
-          selectedTransport,
-        );
-        const source =
-          selectedTransport === 'graphql'
-            ? new GraphQLSource(undefined, undefined, auth.credential)
-            : new GitHubSource(undefined, auth.credential);
+        await repositories.beginSnapshot(repoAtStart, snapshotId, scope);
+        const source = new GraphQLSource(undefined, undefined, auth.credential);
         const synced = await source.createSnapshot(
           repoAtStart,
           {
             snapshotId,
             scope,
-            transport: selectedTransport,
-            concurrency: 4,
-            cache:
-              selectedTransport === 'rest'
-                ? pageCache.forRepository(repoAtStart.id)
-                : undefined,
             onPage: (pageRows) =>
               repositories.stageRows(repoAtStart.id, snapshotId, pageRows),
           },
@@ -484,7 +456,7 @@ export function createAppState() {
         }
         repos = await repositories.list();
         await loadSelectedRows();
-        status = `Ready · ${rows.length} pull requests (${scopeLabel(scope)}, ${selectedTransport.toUpperCase()})`;
+        status = `Ready · ${rows.length} pull requests (${scopeLabel(scope)})`;
       } catch (error) {
         const syncStatus =
           error instanceof AppError && error.code === 'cancelled'

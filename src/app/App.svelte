@@ -258,23 +258,6 @@
                 )}
             />
           {/if}
-          <label for="transport">Transport</label>
-          <select
-            id="transport"
-            disabled={app.busy || !app.selectedRepositories.length}
-            on:change={(event) =>
-              void app.setTransport(
-                (event.currentTarget as HTMLSelectElement).value as
-                  'rest' | 'graphql',
-              )}
-          >
-            <option value="rest" selected={app.transport === 'rest'}
-              >REST (parallel + cached)</option
-            >
-            <option value="graphql" selected={app.transport === 'graphql'}
-              >GraphQL (smaller responses; no ETag cache)</option
-            >
-          </select>
           <button
             on:click={() => app.refresh()}
             disabled={app.busy ||

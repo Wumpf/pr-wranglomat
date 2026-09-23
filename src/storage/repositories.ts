@@ -1,10 +1,6 @@
 import { db } from './db';
 import type { Repository } from '../domain/repository';
-import type {
-  IngestionTransport,
-  SnapshotResult,
-  SnapshotScope,
-} from '../domain/snapshot';
+import type { SnapshotResult, SnapshotScope } from '../domain/snapshot';
 import { storageChanges } from './db';
 export const repositories = {
   list: () => db.repositories.toArray(),
@@ -14,10 +10,7 @@ export const repositories = {
     id: number,
     preferences: Pick<
       Repository,
-      | 'snapshotScope'
-      | 'ingestionTransport'
-      | 'recentCutoffDays'
-      | 'preferenceRevision'
+      'snapshotScope' | 'recentCutoffDays' | 'preferenceRevision'
     >,
   ) {
     let saved: Repository | undefined;
@@ -39,7 +32,6 @@ export const repositories = {
     repo: Repository,
     snapshotId: string,
     scope: SnapshotScope = repo.snapshotScope ?? { kind: 'open' },
-    transport: IngestionTransport = repo.ingestionTransport ?? 'rest',
   ) {
     await db.transaction('rw', db.repositories, db.snapshots, async () => {
       await db.snapshots.put({
@@ -48,12 +40,11 @@ export const repositories = {
         state: 'building',
         schemaVersion: 1,
         profile: 'core',
-        source: 'github-rest',
+        source: 'github-graphql',
         completeness: { core: false },
         count: 0,
         startedAt: new Date().toISOString(),
         scope,
-        transport,
         historyComplete: scope.kind === 'complete',
       });
       const current = await db.repositories.get(repo.id);
@@ -125,12 +116,10 @@ export const repositories = {
           state: 'complete',
           schemaVersion: 1,
           profile: 'core',
-          source:
-            metadata.transport === 'graphql' ? 'github-graphql' : 'github-rest',
+          source: 'github-graphql',
           completeness: metadata.completeness ?? { core: true },
           count: rows.length,
           scope: metadata.scope ?? repo.snapshotScope ?? { kind: 'open' },
-          transport: metadata.transport ?? repo.ingestionTransport ?? 'rest',
           historyComplete:
             metadata.historyComplete ??
             (metadata.scope ?? repo.snapshotScope)?.kind === 'complete',
@@ -144,8 +133,6 @@ export const repositories = {
           snapshotCompleteness: metadata.completeness ?? { core: true },
           activeSnapshotScope: metadata.scope ??
             repo.activeSnapshotScope ?? { kind: 'open' },
-          activeIngestionTransport:
-            metadata.transport ?? repo.activeIngestionTransport ?? 'rest',
           historyComplete:
             metadata.historyComplete ??
             (metadata.scope ?? repo.activeSnapshotScope)?.kind === 'complete',
@@ -221,11 +208,9 @@ export const repositories = {
       db.repositories,
       db.snapshots,
       db.pullRequests,
-      db.pageCache,
       async () => {
         await db.snapshots.where('repositoryId').equals(id).delete();
         await db.pullRequests.where('repositoryId').equals(id).delete();
-        await db.pageCache.where('repositoryId').equals(id).delete();
         await db.repositories.put({
           ...repo,
           activeSnapshotId: undefined,
@@ -233,7 +218,6 @@ export const repositories = {
           snapshotCount: undefined,
           snapshotCompleteness: undefined,
           activeSnapshotScope: undefined,
-          activeIngestionTransport: undefined,
           historyComplete: undefined,
           requestCount: undefined,
           rateLimitRemaining: undefined,
@@ -260,12 +244,10 @@ export const repositories = {
       db.repositories,
       db.snapshots,
       db.pullRequests,
-      db.pageCache,
       async () => {
         await db.repositories.delete(id);
         await db.snapshots.where('repositoryId').equals(id).delete();
         await db.pullRequests.where('repositoryId').equals(id).delete();
-        await db.pageCache.where('repositoryId').equals(id).delete();
       },
     );
     storageChanges?.postMessage({

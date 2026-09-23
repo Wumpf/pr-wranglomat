@@ -5,6 +5,7 @@ import { createAppState } from './appState.svelte';
 import { repositories } from '../storage/repositories';
 import type { Repository } from '../domain/repository';
 import { normalizePullRequest } from '../domain/normalize';
+import { GraphQLSource } from '../github/graphql';
 
 beforeEach(async () => {
   await db.delete();
@@ -72,15 +73,12 @@ it('applies preferences and deletion to all selected repositories only', async (
   await app.init();
   await app.toggleRepository(repos[1]);
   await app.setSnapshotScope({ kind: 'complete' });
-  await app.setTransport('graphql');
   for (const id of [1, 3]) {
     expect(await repositories.get(id)).toMatchObject({
       snapshotScope: { kind: 'complete' },
-      ingestionTransport: 'graphql',
     });
   }
   expect((await repositories.get(2))?.snapshotScope).toBeUndefined();
-  expect((await repositories.get(2))?.ingestionTransport).toBeUndefined();
   const clear = vi.spyOn(repositories, 'clearSnapshotData');
   await app.clearSelectedRepositoryData();
   expect(clear.mock.calls.map(([id]) => id).sort()).toEqual([1, 3]);
@@ -93,6 +91,48 @@ it('applies preferences and deletion to all selected repositories only', async (
   await app.removeSelectedRepositories();
   expect(clear).not.toHaveBeenCalled();
   expect(await repositories.get(2)).toBeDefined();
+});
+
+it('refreshes all selected repositories through GraphQL', async () => {
+  const repos: Repository[] = [1, 2, 3].map((id) => ({
+    id,
+    fullName: `owner/repo${id}`,
+    visibility: 'public',
+    defaultBranch: 'main',
+    lastSyncStatus: 'never',
+  }));
+  for (const repo of repos) await repositories.save(repo);
+  const app = createAppState();
+  await app.init();
+  await app.toggleRepository(repos[1]);
+  app.setToken('test-token');
+  const createSnapshot = vi
+    .spyOn(GraphQLSource.prototype, 'createSnapshot')
+    .mockImplementation(async (repo, options) => ({
+      snapshot: {
+        id: options.snapshotId!,
+        repositoryId: repo.id,
+        state: 'complete',
+        schemaVersion: 1,
+        profile: 'core',
+        source: 'github-graphql',
+        completeness: { core: true },
+        count: 0,
+        startedAt: new Date().toISOString(),
+        scope: options.scope!,
+        historyComplete: false,
+      },
+      pullRequests: [],
+    }));
+  await app.refresh();
+  expect(createSnapshot.mock.calls.map(([repo]) => repo.id).sort()).toEqual([
+    1, 3,
+  ]);
+  expect((await repositories.get(1))?.lastSyncStatus).toBe('ready');
+  expect((await repositories.get(2))?.lastSyncStatus).toBe('never');
+  expect((await repositories.get(3))?.lastSyncStatus).toBe('ready');
+  expect(app.busy).toBe(false);
+  app.forgetToken();
 });
 
 it('requires credentials before refreshing a multi-repository selection', async () => {
@@ -108,7 +148,7 @@ it('requires credentials before refreshing a multi-repository selection', async 
   await app.init();
   app.setToken('test-token');
   await app.toggleRepository(repos[1]);
-  const sync = vi.spyOn(await import('../github/sync'), 'GitHubSource');
+  const sync = vi.spyOn(await import('../github/graphql'), 'GraphQLSource');
   // Missing credentials must not start any repository downloads.
   app.forgetToken();
   await app.refresh();

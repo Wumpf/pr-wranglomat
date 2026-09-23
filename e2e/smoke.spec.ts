@@ -1,25 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
 
-const pullRequest = (number: number, title: string, labels: string[]) => ({
-  number,
-  html_url: `https://github.com/acme/app/pull/${number}`,
-  title,
-  state: 'open',
-  draft: false,
-  user: { login: 'alice' },
-  labels: labels.map((name) => ({ name })),
-  assignees: [],
-  requested_reviewers: [{ login: 'bob' }],
-  requested_teams: [],
-  base: { ref: 'main' },
-  head: { ref: `branch-${number}` },
-  milestone: null,
-  created_at: '2024-01-01T00:00:00Z',
-  updated_at: '2024-01-10T00:00:00Z',
-  closed_at: null,
-  merged_at: null,
-});
-
 const graphPullRequest = (
   number: number,
   title: string,
@@ -65,9 +45,8 @@ async function mockGitHub(page: Page) {
     const request = route.request();
     const cors = {
       'access-control-allow-origin': 'http://127.0.0.1:4173',
-      'access-control-allow-methods': 'GET, POST, OPTIONS',
+      'access-control-allow-methods': 'POST, OPTIONS',
       'access-control-allow-headers': 'Authorization, Accept, Content-Type',
-      'access-control-expose-headers': 'Link, X-RateLimit-Remaining',
     };
     if (request.method() === 'OPTIONS') {
       await route.fulfill({ status: 204, headers: cors });
@@ -75,7 +54,38 @@ async function mockGitHub(page: Page) {
     }
     const url = new URL(request.url());
     expect(request.headers().authorization).toBe('Bearer test-token');
-    if (url.pathname === '/graphql') {
+    expect(url.pathname).toBe('/graphql');
+    expect(request.method()).toBe('POST');
+    const { query, variables } = request.postDataJSON();
+    if (query.includes('query Viewer')) {
+      await route.fulfill({
+        headers: cors,
+        json: {
+          data: {
+            viewer: { login: 'octocat' },
+            rateLimit: { remaining: 4998, resetAt: '2030-01-01T00:00:00Z' },
+          },
+        },
+      });
+      return;
+    }
+    if (query.includes('query Repo(')) {
+      await route.fulfill({
+        headers: cors,
+        json: {
+          data: {
+            repository: {
+              databaseId: 7,
+              nameWithOwner: 'acme/app',
+              visibility: 'PRIVATE',
+              defaultBranchRef: { name: 'main' },
+            },
+          },
+        },
+      });
+      return;
+    }
+    if (query.includes('query PullRequests')) {
       expect(request.postData()).toContain('reviewDecision');
       expect(request.postData()).toContain('reviews(first:100');
       await route.fulfill({
@@ -84,11 +94,13 @@ async function mockGitHub(page: Page) {
           data: {
             repository: {
               pullRequests: {
-                nodes: [
-                  graphPullRequest(1, 'Fix crash', 'REVIEW_REQUIRED'),
-                  graphPullRequest(2, 'Add feature', 'APPROVED', true),
-                ],
-                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: variables.cursor
+                  ? [graphPullRequest(2, 'Add feature', 'APPROVED', true)]
+                  : [graphPullRequest(1, 'Fix crash', 'REVIEW_REQUIRED')],
+                pageInfo: {
+                  hasNextPage: !variables.cursor,
+                  endCursor: variables.cursor ? null : 'next-page',
+                },
               },
             },
             rateLimit: {
@@ -98,55 +110,6 @@ async function mockGitHub(page: Page) {
             },
           },
         },
-      });
-      return;
-    }
-    if (url.pathname === '/user') {
-      await route.fulfill({ headers: cors, json: { login: 'octocat' } });
-      return;
-    }
-    if (url.pathname === '/rate_limit') {
-      await route.fulfill({
-        headers: cors,
-        json: { rate: { remaining: 4998, reset: 2_000_000_000 } },
-      });
-      return;
-    }
-    if (url.pathname === '/repos/acme/app') {
-      await route.fulfill({
-        headers: cors,
-        json: {
-          id: 7,
-          full_name: 'acme/app',
-          visibility: 'private',
-          default_branch: 'main',
-        },
-      });
-      return;
-    }
-    if (url.pathname === '/repos/acme/app/pulls') {
-      const pageNumber = url.searchParams.get('page');
-      await route.fulfill({
-        headers: {
-          ...cors,
-          'content-type': 'application/json',
-          'x-ratelimit-remaining': pageNumber === '2' ? '4996' : '4997',
-          ...(pageNumber === '2'
-            ? {}
-            : {
-                link: '<https://api.github.com/repos/acme/app/pulls?state=all&per_page=100&page=2>; rel="next"',
-              }),
-        },
-        body: JSON.stringify(
-          pageNumber === '2'
-            ? [
-                {
-                  ...pullRequest(2, 'Add feature', ['feature']),
-                  draft: true,
-                },
-              ]
-            : [pullRequest(1, 'Fix crash', ['bug'])],
-        ),
       });
       return;
     }
@@ -202,12 +165,6 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
   await expect(page.getByRole('button', { name: 'Import' })).toHaveCount(0);
   await expect(page.getByText(/2 PRs/).first()).toBeVisible();
   await expect(
-    page.getByRole('cell', { name: 'Unavailable', exact: true }).first(),
-  ).toBeVisible();
-
-  await page.getByLabel('Transport').selectOption('graphql');
-  await page.getByRole('button', { name: /Refresh/ }).click();
-  await expect(
     page.getByRole('cell', { name: 'Review required', exact: true }),
   ).toBeVisible();
   await expect(
@@ -239,12 +196,12 @@ test('refreshes, preserves an invalid draft, reloads, and filters offline', asyn
   await page.getByLabel('Download scope').selectOption('recent');
   await page.getByLabel('Closed days').fill('120');
   await page.getByLabel('Closed days').blur();
-  await page.getByLabel('Transport').selectOption('graphql');
-  await expect(page.getByText('Download preferences saved.')).toBeVisible();
+  await expect(
+    page.getByText('Download preferences saved for selected repositories.'),
+  ).toBeVisible();
   await page.reload();
   await expect(page.getByLabel('Download scope')).toHaveValue('recent');
   await expect(page.getByLabel('Closed days')).toHaveValue('120');
-  await expect(page.getByLabel('Transport')).toHaveValue('graphql');
   await expect(historyWarning).toBeVisible();
 
   await page.getByRole('button', { name: 'New filter', exact: true }).click();

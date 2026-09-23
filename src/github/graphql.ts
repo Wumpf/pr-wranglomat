@@ -4,7 +4,7 @@ import type {
   PullRequestSource,
   SnapshotOptions,
 } from '../ingestion/source';
-import type { Repository } from '../domain/repository';
+import { normalizeRepoInput, type Repository } from '../domain/repository';
 import type { SnapshotResult, SyncProgress } from '../domain/snapshot';
 import { AppError } from '../domain/errors';
 import type { ReviewActivityState } from '../domain/pullRequest';
@@ -46,22 +46,37 @@ export class GraphQLSource implements PullRequestSource {
     private readonly fetcher: typeof fetch = globalThis.fetch.bind(globalThis),
     private readonly credential?: Credential,
   ) {}
+  async validateCredential(signal?: AbortSignal) {
+    const response = await this.request<{
+      data?: {
+        viewer?: { login?: string };
+        rateLimit?: { remaining: number; resetAt: string };
+      };
+    }>(
+      'query Viewer { viewer { login } rateLimit { remaining resetAt } }',
+      {},
+      this.credential,
+      signal,
+    );
+    const login = response.data?.viewer?.login;
+    const rate = response.data?.rateLimit;
+    if (typeof login !== 'string' || !rate)
+      throw new AppError(
+        'invalid-response',
+        'GitHub returned an invalid authentication response.',
+      );
+    return {
+      login,
+      rateLimitRemaining: rate.remaining,
+      rateLimitResetAt: rate.resetAt,
+    };
+  }
   async resolveRepository(
     input: string,
     credential?: Credential,
     signal?: AbortSignal,
   ): Promise<Repository> {
-    const parts = input
-      .trim()
-      .replace(/^https?:\/\/github\.com\//i, '')
-      .replace(/\.git$/, '')
-      .replace(/\/$/, '')
-      .split('/');
-    if (parts.length !== 2)
-      throw new AppError(
-        'invalid-response',
-        'Repository must be owner/name or a GitHub URL.',
-      );
+    const parts = normalizeRepoInput(input).split('/');
     const body = await this.request<GraphQLResponse>(
       repoQuery,
       { owner: parts[0], name: parts[1] },
@@ -99,7 +114,6 @@ export class GraphQLSource implements PullRequestSource {
       defaultBranch: repo.defaultBranchRef.name,
       lastSyncStatus: 'never',
       snapshotScope: { kind: 'open' },
-      ingestionTransport: 'graphql',
     };
   }
   async createSnapshot(
@@ -227,7 +241,6 @@ export class GraphQLSource implements PullRequestSource {
         startedAt: new Date().toISOString(),
         finishedAt: new Date().toISOString(),
         scope,
-        transport: 'graphql',
         historyComplete: scope.kind === 'complete',
         requestCount: requests,
         rateLimitRemaining: remaining,
@@ -380,7 +393,9 @@ export class GraphQLSource implements PullRequestSource {
       snapshotId,
     );
   }
-  private async request<T extends GraphQLResponse>(
+  private async request<
+    T extends { data?: unknown; errors?: GraphQLResponse['errors'] },
+  >(
     queryText: string,
     variables: Record<string, unknown>,
     credential?: Credential,

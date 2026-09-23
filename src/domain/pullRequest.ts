@@ -7,7 +7,7 @@ export interface ReviewActivity {
   login: string;
   states: ReviewActivityState[];
 }
-export type DataSource = 'github-rest' | 'github-graphql' | 'snapshot-import';
+export type DataSource = 'github-graphql' | 'snapshot-import';
 export type Completeness = Record<string, boolean>;
 
 export interface PullRequest {
