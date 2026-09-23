@@ -17,7 +17,8 @@ import { formatDiagnosticLocation } from './diagnostics';
 import { pageCache } from '../storage/pageCache';
 export function createAppState() {
   let repos = $state<Repository[]>([]);
-  let selected = $state<Repository | undefined>();
+  let excludedRepositoryIds = $state<number[]>([]);
+  let refreshingSelection = $state(false);
   let rows = $state<PullRequest[]>([]);
   let savedFilters = $state<StoredFilter[]>([]);
   let activeFilter = $state<StoredFilter | undefined>();
@@ -44,7 +45,6 @@ export function createAppState() {
   let snapshotScope = $state<SnapshotScope>({ kind: 'open' });
   let recentCutoffDays = $state(90);
   let transport = $state<IngestionTransport>('rest');
-  let activeSnapshotScope = $state<SnapshotScope | undefined>();
   let authIdentity = $state<
     | { login: string; rateLimitRemaining?: number; rateLimitResetAt?: string }
     | undefined
@@ -74,6 +74,20 @@ export function createAppState() {
       unavailableFields = [];
     }
     page = 1;
+  };
+  const loadSelectedRows = async () => {
+    const selection = ++selectionGeneration;
+    const included = repos.filter(
+      (repo) => !excludedRepositoryIds.includes(repo.id),
+    );
+    const nextRows = (
+      await Promise.all(
+        included.map((repo) => repositories.activeRows(repo.id)),
+      )
+    ).flat();
+    if (selection !== selectionGeneration) return;
+    rows = nextRows;
+    apply();
   };
   const scheduleSave = () => {
     if (!activeFilter) return;
@@ -132,8 +146,18 @@ export function createAppState() {
     get repos() {
       return repos;
     },
-    get selected() {
-      return selected;
+    get selectedRepositories() {
+      return repos.filter((repo) => !excludedRepositoryIds.includes(repo.id));
+    },
+    async toggleRepository(repo: Repository) {
+      excludedRepositoryIds = excludedRepositoryIds.includes(repo.id)
+        ? excludedRepositoryIds.filter((id) => id !== repo.id)
+        : [...excludedRepositoryIds, repo.id];
+      await loadSelectedRows();
+    },
+    async selectAllRepositories() {
+      excludedRepositoryIds = [];
+      await loadSelectedRows();
     },
     get rows() {
       return rows;
@@ -189,7 +213,7 @@ export function createAppState() {
       return status;
     },
     get busy() {
-      return busy;
+      return busy || refreshingSelection;
     },
     get saveState() {
       return saveState;
@@ -213,33 +237,19 @@ export function createAppState() {
       return recentCutoffDays;
     },
     get historyWarning() {
-      return activeSnapshotScope && activeSnapshotScope.kind !== 'complete'
+      return repos.some(
+        (repo) =>
+          !excludedRepositoryIds.includes(repo.id) &&
+          repo.activeSnapshotScope &&
+          repo.activeSnapshotScope.kind !== 'complete',
+      )
         ? 'This snapshot omits some closed and merged pull requests. A zero-match result is not proof that historical PRs are absent.'
         : '';
     },
     async setSnapshotScope(scope: SnapshotScope) {
       snapshotScope = scope;
       if (scope.kind === 'recent') recentCutoffDays = scope.cutoffDays;
-      if (selected) {
-        const revision = ++preferenceRevision;
-        selected = {
-          ...selected,
-          snapshotScope: scope,
-          recentCutoffDays,
-          preferenceRevision: revision,
-        };
-        repos = repos.map((repo) =>
-          repo.id === selected?.id ? selected! : repo,
-        );
-        await repositories.savePreferences(selected.id, {
-          snapshotScope: cloneScope(scope),
-          ingestionTransport: transport,
-          recentCutoffDays,
-          preferenceRevision: revision,
-        });
-        if (revision === preferenceRevision)
-          status = 'Download preferences saved.';
-      }
+      await this.saveSelectedPreferences();
     },
     async setRecentCutoff(days: number) {
       const safe = Math.max(1, Math.min(3650, Math.trunc(days) || 90));
@@ -248,25 +258,34 @@ export function createAppState() {
     },
     async setTransport(value: IngestionTransport) {
       transport = value;
-      if (selected) {
-        const revision = ++preferenceRevision;
-        selected = {
-          ...selected,
-          ingestionTransport: value,
-          preferenceRevision: revision,
-        };
-        repos = repos.map((repo) =>
-          repo.id === selected?.id ? selected! : repo,
-        );
-        await repositories.savePreferences(selected.id, {
-          snapshotScope: cloneScope(snapshotScope),
-          ingestionTransport: value,
-          recentCutoffDays,
-          preferenceRevision: revision,
-        });
-        if (revision === preferenceRevision)
-          status = 'Download preferences saved.';
-      }
+      await this.saveSelectedPreferences();
+    },
+    async saveSelectedPreferences() {
+      const targets = this.selectedRepositories;
+      if (!targets.length) return;
+      const revision =
+        Math.max(
+          preferenceRevision,
+          ...repos.map((repo) => repo.preferenceRevision ?? 0),
+        ) + 1;
+      preferenceRevision = revision;
+      const preferences = {
+        snapshotScope: cloneScope(snapshotScope),
+        ingestionTransport: transport,
+        recentCutoffDays,
+        preferenceRevision: revision,
+      };
+      const ids = new Set(targets.map((repo) => repo.id));
+      repos = repos.map((repo) =>
+        ids.has(repo.id) ? { ...repo, ...preferences } : repo,
+      );
+      await Promise.all(
+        targets.map((repo) =>
+          repositories.savePreferences(repo.id, preferences),
+        ),
+      );
+      if (revision === preferenceRevision)
+        status = 'Download preferences saved for selected repositories.';
     },
     async validateToken() {
       authIdentity = await auth.validate();
@@ -279,31 +298,8 @@ export function createAppState() {
         window.addEventListener('offline', () => (online = false));
       }
       storageChanges?.addEventListener('message', async () => {
-        const selectedId = selected?.id;
-        const nextRepos = await repositories.list();
-        const nextSelected = selectedId
-          ? nextRepos.find((repo) => repo.id === selectedId)
-          : undefined;
-        const nextRows = nextSelected
-          ? await repositories.activeRows(nextSelected.id)
-          : [];
-        if (selected?.id !== selectedId) return;
-        repos = nextRepos;
-        selected = nextSelected;
-        rows = nextRows;
-        if (nextSelected) {
-          snapshotScope = nextSelected.snapshotScope ?? { kind: 'open' };
-          recentCutoffDays =
-            nextSelected.recentCutoffDays ??
-            (nextSelected.snapshotScope?.kind === 'recent'
-              ? nextSelected.snapshotScope.cutoffDays
-              : 90);
-          transport = nextSelected.ingestionTransport ?? 'rest';
-          activeSnapshotScope = nextSelected.activeSnapshotScope;
-          preferenceRevision = nextSelected.preferenceRevision ?? 0;
-        } else {
-          activeSnapshotScope = undefined;
-        }
+        repos = await repositories.list();
+        await loadSelectedRows();
         savedFilters = await filters.list();
         if (activeFilter) {
           const activeId = activeFilter.id;
@@ -340,24 +336,13 @@ export function createAppState() {
         savedFilters[0];
       source = activeFilter.source;
       saveState = 'Saved';
-      const selectedId = await settings.get<number | undefined>(
-        'selectedRepository',
-        undefined,
-      );
-      selected = repos.find((x) => x.id === selectedId) ?? repos[0];
-      if (selected?.snapshotScope) snapshotScope = selected.snapshotScope;
+      const first = repos[0];
+      snapshotScope = first?.snapshotScope ?? { kind: 'open' };
       recentCutoffDays =
-        selected?.recentCutoffDays ??
-        (selected?.snapshotScope?.kind === 'recent'
-          ? selected.snapshotScope.cutoffDays
-          : 90);
-      if (selected?.ingestionTransport) transport = selected.ingestionTransport;
-      activeSnapshotScope = selected?.activeSnapshotScope;
-      preferenceRevision = selected?.preferenceRevision ?? 0;
-      if (selected) {
-        rows = await repositories.activeRows(selected.id);
-        await settings.set('selectedRepository', selected.id);
-      }
+        first?.recentCutoffDays ??
+        (snapshotScope.kind === 'recent' ? snapshotScope.cutoffDays : 90);
+      transport = first?.ingestionTransport ?? 'rest';
+      await loadSelectedRows();
       await settings.set('activeFilter', activeFilter.id);
       apply();
     },
@@ -383,16 +368,45 @@ export function createAppState() {
         ).resolveRepository(input, auth.credential);
         await repositories.save(repo);
         repos = await repositories.list();
-        selected = repo;
-        rows = await repositories.activeRows(repo.id);
-        await settings.set('selectedRepository', repo.id);
+        excludedRepositoryIds = excludedRepositoryIds.filter(
+          (id) => id !== repo.id,
+        );
+        await loadSelectedRows();
         status = `${repo.fullName} added. Refresh to download pull requests.`;
       } finally {
         busy = false;
       }
     },
     async refresh() {
-      if (!selected || !auth.credential) {
+      if (busy || refreshingSelection) return;
+      const targets = this.selectedRepositories;
+      if (!targets.length || !auth.credential) {
+        status = 'Select at least one repository and provide a token first.';
+        return;
+      }
+      refreshingSelection = true;
+      const startGeneration = generation;
+      const scope = cloneScope(snapshotScope);
+      const selectedTransport = transport;
+      try {
+        await this.saveSelectedPreferences();
+        if (generation !== startGeneration) return;
+        for (const target of targets) {
+          const repo = {
+            ...target,
+            snapshotScope: scope,
+            ingestionTransport: selectedTransport,
+          };
+          const expectedGeneration = generation + 1;
+          await this.refreshRepository(repo);
+          if (generation !== expectedGeneration) break;
+        }
+      } finally {
+        refreshingSelection = false;
+      }
+    },
+    async refreshRepository(target: Repository) {
+      if (!auth.credential) {
         status = 'Add a repository and provide a token first.';
         return;
       }
@@ -400,9 +414,9 @@ export function createAppState() {
       busy = true;
       controller = new AbortController();
       status = 'Refreshing…';
-      const repoAtStart = selected;
-      const scope = cloneScope(snapshotScope);
-      const selectedTransport = transport;
+      const repoAtStart = target;
+      const scope = cloneScope(target.snapshotScope ?? { kind: 'open' });
+      const selectedTransport = target.ingestionTransport ?? 'rest';
       const snapshotId = crypto.randomUUID();
       try {
         await repositories.beginSnapshot(
@@ -469,11 +483,7 @@ export function createAppState() {
           return;
         }
         repos = await repositories.list();
-        selected = repos.find((x) => x.id === selected?.id);
-        if (selected?.id !== repoAtStart.id) return;
-        rows = synced.pullRequests;
-        apply();
-        activeSnapshotScope = scope;
+        await loadSelectedRows();
         status = `Ready · ${rows.length} pull requests (${scopeLabel(scope)}, ${selectedTransport.toUpperCase()})`;
       } catch (error) {
         const syncStatus =
@@ -505,24 +515,6 @@ export function createAppState() {
       controller = undefined;
       busy = false;
       status = 'Refresh cancelled; previous snapshot remains active.';
-    },
-    async select(repo: Repository) {
-      const selection = ++selectionGeneration;
-      selected = repo;
-      snapshotScope = repo.snapshotScope ?? { kind: 'open' };
-      recentCutoffDays =
-        repo.recentCutoffDays ??
-        (repo.snapshotScope?.kind === 'recent'
-          ? repo.snapshotScope.cutoffDays
-          : 90);
-      transport = repo.ingestionTransport ?? 'rest';
-      activeSnapshotScope = repo.activeSnapshotScope;
-      preferenceRevision = repo.preferenceRevision ?? 0;
-      await settings.set('selectedRepository', repo.id);
-      const nextRows = await repositories.activeRows(repo.id);
-      if (selection !== selectionGeneration || selected?.id !== repo.id) return;
-      rows = nextRows;
-      apply();
     },
     async selectFilter(id: string) {
       const selection = ++filterSelectionGeneration;
@@ -628,33 +620,25 @@ export function createAppState() {
       await settings.set('activeFilter', activeFilter.id);
       apply();
     },
-    async removeRepository(id: number) {
-      if (id === selected?.id) {
-        generation++;
-        controller?.abort();
-      }
-      await repositories.clear(id);
+    async removeSelectedRepositories() {
+      const targets = this.selectedRepositories;
+      if (!targets.length) return;
+      if (busy || refreshingSelection) this.cancel();
+      await Promise.all(targets.map((repo) => repositories.clear(repo.id)));
       repos = await repositories.list();
-      selected = repos[0];
-      if (selected) await settings.set('selectedRepository', selected.id);
-      else await settings.remove('selectedRepository');
-      rows = selected ? await repositories.activeRows(selected.id) : [];
-      apply();
+      await loadSelectedRows();
+      status = `Removed ${targets.length} selected repositories.`;
     },
-    async clearRepositoryData(id: number) {
-      if (id === selected?.id) {
-        generation++;
-        controller?.abort();
-        controller = undefined;
-        busy = false;
-      }
-      await repositories.clearSnapshotData(id);
-      if (selected?.id === id) {
-        rows = [];
-        activeSnapshotScope = undefined;
-        apply();
-      }
+    async clearSelectedRepositoryData() {
+      const targets = this.selectedRepositories;
+      if (!targets.length) return;
+      if (busy || refreshingSelection) this.cancel();
+      await Promise.all(
+        targets.map((repo) => repositories.clearSnapshotData(repo.id)),
+      );
       repos = await repositories.list();
+      await loadSelectedRows();
+      status = `Deleted cached data for ${targets.length} selected repositories.`;
     },
     async clearData() {
       generation++;
@@ -665,7 +649,8 @@ export function createAppState() {
       await sourceSavePromise;
       await repositories.clear();
       repos = [];
-      selected = undefined;
+      excludedRepositoryIds = [];
+      ++selectionGeneration;
       rows = [];
       result = [];
       await filters.create('My filter');

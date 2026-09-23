@@ -180,22 +180,40 @@
           >Add</button
         >
       </div>
-      {#if app.repos.length}<div class="repo-list">
-          {#each app.repos as repo}<button
-              class:selected={app.selected?.id === repo.id}
+      {#if app.repos.length}
+        <div class="actions">
+          <span
+            >{app.selectedRepositories.length} of {app.repos.length} selected</span
+          >
+          <button class="secondary" on:click={() => app.selectAllRepositories()}
+            >Select all</button
+          >
+        </div>
+        <div class="repo-list">
+          {#each app.repos as repo}
+            <button
+              class:selected={app.selectedRepositories.some(
+                (selected) => selected.id === repo.id,
+              )}
+              aria-pressed={app.selectedRepositories.some(
+                (selected) => selected.id === repo.id,
+              )}
               class="repo"
-              on:click={() => app.select(repo)}
+              on:click={() => app.toggleRepository(repo)}
               ><strong>{repo.fullName}</strong><small
                 >{repo.visibility} · {repo.lastSyncStatus} · {repo.snapshotCount ??
                   0} PRs{repo.lastSuccessfulSyncAt
                   ? ` · ${relativeTime(repo.lastSuccessfulSyncAt)}`
                   : ''}</small
               ></button
-            >{/each}
-        </div>{/if}{#if app.selected}<div class="actions">
+            >
+          {/each}
+        </div>{/if}{#if app.repos.length}<div class="actions">
+          <span>Actions apply to all selected repositories.</span>
           <label for="snapshot-scope">Download scope</label>
           <select
             id="snapshot-scope"
+            disabled={app.busy || !app.selectedRepositories.length}
             on:change={(event) => {
               const value = (event.currentTarget as HTMLSelectElement).value;
               void app.setSnapshotScope(
@@ -228,6 +246,7 @@
             <label for="recent-cutoff">Closed days</label>
             <input
               id="recent-cutoff"
+              disabled={app.busy || !app.selectedRepositories.length}
               type="number"
               min="1"
               max="3650"
@@ -242,6 +261,7 @@
           <label for="transport">Transport</label>
           <select
             id="transport"
+            disabled={app.busy || !app.selectedRepositories.length}
             on:change={(event) =>
               void app.setTransport(
                 (event.currentTarget as HTMLSelectElement).value as
@@ -255,39 +275,23 @@
               >GraphQL (smaller responses; no ETag cache)</option
             >
           </select>
-          <span>
-            {app.selected.fullName}<small class="repo-details">
-              {app.selected.visibility} · {app.selected.snapshotCount ?? 0} PRs ·
-              completeness {app.selected.snapshotCompleteness?.core
-                ? 'core complete'
-                : 'not downloaded'} · active snapshot {app.selected
-                .historyComplete
-                ? 'complete history'
-                : app.selected.activeSnapshotScope
-                  ? app.selected.activeSnapshotScope.kind === 'recent'
-                    ? `recent (${app.selected.activeSnapshotScope.cutoffDays}d)`
-                    : 'open only'
-                  : 'not downloaded'}
-              {#if app.selected.requestCount !== undefined}
-                · {app.selected.requestCount} requests{/if}
-              {#if app.selected.rateLimitRemaining !== undefined}
-                · {app.selected.rateLimitRemaining} remaining{/if}
-              {#if app.selected.syncError}
-                · {app.selected.syncError}{/if}
-            </small>
-          </span><button
+          <button
             on:click={() => app.refresh()}
-            disabled={app.busy || !app.configured}>↻ Refresh</button
+            disabled={app.busy ||
+              !app.configured ||
+              !app.selectedRepositories.length}>↻ Refresh selected</button
           >{#if app.busy}<button class="secondary" on:click={() => app.cancel()}
               >Cancel</button
             >{/if}<button
             class="secondary"
-            on:click={() => app.removeRepository(app.selected!.id)}
-            >Remove repository</button
+            disabled={!app.selectedRepositories.length}
+            on:click={() => app.removeSelectedRepositories()}
+            >Remove selected repositories</button
           ><button
             class="danger"
-            on:click={() => app.clearRepositoryData(app.selected!.id)}
-            >Delete cached data</button
+            disabled={!app.selectedRepositories.length}
+            on:click={() => app.clearSelectedRepositoryData()}
+            >Delete selected cached data</button
           ><button class="danger" on:click={() => app.clearData()}
             >Delete all local data</button
           >

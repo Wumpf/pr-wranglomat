@@ -2,6 +2,9 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { db } from '../storage/db';
 import { filters } from '../storage/filters';
 import { createAppState } from './appState.svelte';
+import { repositories } from '../storage/repositories';
+import type { Repository } from '../domain/repository';
+import { normalizePullRequest } from '../domain/normalize';
 
 beforeEach(async () => {
   await db.delete();
@@ -10,6 +13,110 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+it('defaults to all repositories and combines independently selected results', async () => {
+  const repos: Repository[] = [1, 2].map((id) => ({
+    id,
+    fullName: `owner/repo${id}`,
+    visibility: 'public',
+    defaultBranch: 'main',
+    lastSyncStatus: 'never',
+  }));
+  for (const repo of repos) await repositories.save(repo);
+  vi.spyOn(repositories, 'activeRows').mockImplementation(async (id) => [
+    normalizePullRequest(
+      {
+        number: 1,
+        html_url: `https://github.com/owner/repo${id}/pull/1`,
+        title: `PR ${id}`,
+        state: 'open',
+        base: { ref: 'main' },
+        head: { ref: 'branch' },
+        created_at: '2026-01-01',
+        updated_at: '2026-01-01',
+        closed_at: null,
+      },
+      id,
+      `owner/repo${id}`,
+      'snapshot',
+    ),
+  ]);
+  const app = createAppState();
+  await app.init();
+  expect(app.selectedRepositories).toHaveLength(2);
+  expect(app.result.map((row) => row.repositoryId).sort()).toEqual([1, 2]);
+  await app.toggleRepository(repos[0]);
+  expect(app.result.map((row) => row.repositoryId)).toEqual([2]);
+  await app.toggleRepository(repos[1]);
+  expect(app.result).toEqual([]);
+  await app.selectAllRepositories();
+  expect(app.result).toHaveLength(2);
+  await app.toggleRepository(repos[1]);
+  await app.removeSelectedRepositories();
+  expect(app.repos.map((repo) => repo.id)).toEqual([2]);
+  expect(app.selectedRepositories).toEqual([]);
+  expect(app.result).toEqual([]);
+});
+
+it('applies preferences and deletion to all selected repositories only', async () => {
+  const repos: Repository[] = [1, 2, 3].map((id) => ({
+    id,
+    fullName: `owner/repo${id}`,
+    visibility: 'public',
+    defaultBranch: 'main',
+    lastSyncStatus: 'never',
+  }));
+  for (const repo of repos) await repositories.save(repo);
+  const app = createAppState();
+  await app.init();
+  await app.toggleRepository(repos[1]);
+  await app.setSnapshotScope({ kind: 'complete' });
+  await app.setTransport('graphql');
+  for (const id of [1, 3]) {
+    expect(await repositories.get(id)).toMatchObject({
+      snapshotScope: { kind: 'complete' },
+      ingestionTransport: 'graphql',
+    });
+  }
+  expect((await repositories.get(2))?.snapshotScope).toBeUndefined();
+  expect((await repositories.get(2))?.ingestionTransport).toBeUndefined();
+  const clear = vi.spyOn(repositories, 'clearSnapshotData');
+  await app.clearSelectedRepositoryData();
+  expect(clear.mock.calls.map(([id]) => id).sort()).toEqual([1, 3]);
+  expect(app.repos).toHaveLength(3);
+  await app.removeSelectedRepositories();
+  expect(app.repos.map((repo) => repo.id)).toEqual([2]);
+  expect(app.selectedRepositories).toEqual([]);
+  clear.mockClear();
+  await app.clearSelectedRepositoryData();
+  await app.removeSelectedRepositories();
+  expect(clear).not.toHaveBeenCalled();
+  expect(await repositories.get(2)).toBeDefined();
+});
+
+it('requires credentials before refreshing a multi-repository selection', async () => {
+  const repos: Repository[] = [1, 2, 3].map((id) => ({
+    id,
+    fullName: `owner/repo${id}`,
+    visibility: 'public',
+    defaultBranch: 'main',
+    lastSyncStatus: 'never',
+  }));
+  for (const repo of repos) await repositories.save(repo);
+  const app = createAppState();
+  await app.init();
+  app.setToken('test-token');
+  await app.toggleRepository(repos[1]);
+  const sync = vi.spyOn(await import('../github/sync'), 'GitHubSource');
+  // Missing credentials must not start any repository downloads.
+  app.forgetToken();
+  await app.refresh();
+  expect(sync).not.toHaveBeenCalled();
+  expect(app.status).toContain('provide a token');
+  expect(app.selectedRepositories.map((repo) => repo.id).sort()).toEqual([
+    1, 3,
+  ]);
 });
 
 it('creates a saved filter and saves every edit immediately', async () => {
